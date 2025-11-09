@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vyakti-common",
+    "crates/vyakti-storage",
+    "crates/vyakti-embedding",
+    "crates/vyakti-core",
+    "crates/vyakti-backend-hnsw",
+    "crates/vyakti-backend-diskann",
+    "crates/vyakti-proto",
+    "crates/vyakti-server",
+    "crates/vyakti-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT"
+authors = ["Vyakti Contributors"]
+repository = "https://github.com/yourusername/vyakti"
+homepage = "https://vyakti.dev"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+colored = "2.1"
+indicatif = "0.17"
+
+# HTTP server
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "compression-full"] }
+
+# gRPC
+tonic = "0.11"
+tonic-build = "0.11"
+prost = "0.12"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Metrics
+prometheus = "0.13"
+
+# Config
+config = "0.14"
+
+# Memory mapping
+memmap2 = "0.9"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Testing
+criterion = "0.5"
+mockall = "0.12"
+
+# ONNX Runtime for embeddings
+ort = "2.0.0-rc.2"
+
+# Tokenizers
+tokenizers = "0.19"
+
+# Math
+ndarray = "0.15"
+rand = "0.8"
+
+# Utilities
+rayon = "1.8"
+dashmap = "5.5"
+parking_lot = "0.12"
+
+[profile.dev]
+opt-level = 0
+debug = true
+split-debuginfo = "unpacked"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true

@@ -1,0 +1,33 @@
+[package]
+name = "vyakti-embedding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+vyakti-common = { path = "../vyakti-common" }
+
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+
+# ONNX Runtime for local models
+ort = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+ndarray.workspace = true
+
+# Cache
+dashmap.workspace = true
+
+[features]
+default = ["onnx"]
+onnx = ["ort", "tokenizers"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
