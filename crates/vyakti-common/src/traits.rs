@@ -20,8 +20,8 @@ impl Default for BackendConfig {
     fn default() -> Self {
         Self {
             graph_degree: 32,
-            build_complexity: 64,
-            search_complexity: 32,
+            build_complexity: 128,
+            search_complexity: 64,
         }
     }
 }
@@ -38,6 +38,19 @@ pub trait Backend: Send + Sync {
     /// Search for nearest neighbors
     async fn search(&self, query: &Vector, k: usize) -> Result<Vec<SearchResult>>;
 
+    /// Set document data (text and metadata) for a node
+    /// This is called after build() to associate text/metadata with vectors
+    fn set_document_data(
+        &mut self,
+        node_id: usize,
+        text: String,
+        metadata: HashMap<String, serde_json::Value>,
+    ) {
+        // Default implementation does nothing
+        // Backends can override to store text/metadata
+        let _ = (node_id, text, metadata);
+    }
+
     /// Get number of vectors in the index
     fn len(&self) -> usize;
 
@@ -45,6 +58,13 @@ pub trait Backend: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Get mutable reference as Any for downcasting
+    /// This allows downcasting to specific backend implementations
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Get reference as Any for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Embedding provider trait for computing embeddings.
@@ -58,4 +78,164 @@ pub trait EmbeddingProvider: Send + Sync {
 
     /// Get provider name
     fn name(&self) -> &str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // Mock Backend implementation for testing
+    struct MockBackend {
+        name: String,
+        vectors: Vec<Vector>,
+    }
+
+    #[async_trait]
+    impl Backend for MockBackend {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn build(&mut self, vectors: &[Vector], _config: &BackendConfig) -> Result<()> {
+            self.vectors = vectors.to_vec();
+            Ok(())
+        }
+
+        async fn search(&self, _query: &Vector, k: usize) -> Result<Vec<SearchResult>> {
+            let mut results = vec![];
+            for (i, _vec) in self.vectors.iter().enumerate().take(k) {
+                results.push(SearchResult {
+                    id: i,
+                    text: format!("document {}", i),
+                    score: 0.5,
+                    metadata: HashMap::new(),
+                });
+            }
+            Ok(results)
+        }
+
+        fn len(&self) -> usize {
+            self.vectors.len()
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    // Mock EmbeddingProvider implementation for testing
+    struct MockEmbeddingProvider {
+        dimension: usize,
+    }
+
+    #[async_trait]
+    impl EmbeddingProvider for MockEmbeddingProvider {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vector>> {
+            Ok(texts.iter().map(|_| vec![0.0; self.dimension]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    #[test]
+    fn test_backend_config_default() {
+        let config = BackendConfig::default();
+        assert_eq!(config.graph_degree, 32);
+        assert_eq!(config.build_complexity, 64);
+        assert_eq!(config.search_complexity, 32);
+    }
+
+    #[test]
+    fn test_backend_config_serialization() {
+        let config = BackendConfig {
+            graph_degree: 64,
+            build_complexity: 128,
+            search_complexity: 64,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: BackendConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.graph_degree, deserialized.graph_degree);
+        assert_eq!(config.build_complexity, deserialized.build_complexity);
+        assert_eq!(config.search_complexity, deserialized.search_complexity);
+    }
+
+    #[tokio::test]
+    async fn test_mock_backend_build() {
+        let mut backend = MockBackend {
+            name: "test-backend".to_string(),
+            vectors: vec![],
+        };
+
+        assert_eq!(backend.name(), "test-backend");
+        assert_eq!(backend.len(), 0);
+        assert!(backend.is_empty());
+
+        let vectors = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
+        let config = BackendConfig::default();
+
+        backend.build(&vectors, &config).await.unwrap();
+
+        assert_eq!(backend.len(), 2);
+        assert!(!backend.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_backend_search() {
+        let mut backend = MockBackend {
+            name: "test-backend".to_string(),
+            vectors: vec![],
+        };
+
+        let vectors = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+            vec![7.0, 8.0, 9.0],
+        ];
+        let config = BackendConfig::default();
+        backend.build(&vectors, &config).await.unwrap();
+
+        let query = vec![1.0, 2.0, 3.0];
+        let results = backend.search(&query, 2).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, 0);
+        assert_eq!(results[1].id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_embedding_provider() {
+        let provider = MockEmbeddingProvider { dimension: 384 };
+
+        assert_eq!(provider.name(), "mock");
+        assert_eq!(provider.dimension(), 384);
+
+        let texts = vec!["hello".to_string(), "world".to_string()];
+        let embeddings = provider.embed(&texts).await.unwrap();
+
+        assert_eq!(embeddings.len(), 2);
+        assert_eq!(embeddings[0].len(), 384);
+        assert_eq!(embeddings[1].len(), 384);
+    }
+
+    #[test]
+    fn test_backend_config_clone() {
+        let config = BackendConfig::default();
+        let cloned = config.clone();
+
+        assert_eq!(config.graph_degree, cloned.graph_degree);
+        assert_eq!(config.build_complexity, cloned.build_complexity);
+        assert_eq!(config.search_complexity, cloned.search_complexity);
+    }
 }

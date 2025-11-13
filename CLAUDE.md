@@ -404,10 +404,18 @@ crates/
 ├── vyakti-core/            # Main API (Builder, Searcher, Chat)
 ├── vyakti-backend-hnsw/    # HNSW algorithm implementation
 ├── vyakti-backend-diskann/ # DiskANN algorithm with PQ compression
+├── vyakti-keyword/         # BM25 keyword search for hybrid mode
 ├── vyakti-proto/           # Protocol buffer definitions
 ├── vyakti-server/          # REST + gRPC server
 └── vyakti-cli/             # Command-line interface
 ```
+
+**Key Features:**
+- **Hybrid Search** - Combines semantic vector search with BM25 keyword search
+- **LEANN Compact Mode** - 93% storage savings through intelligent pruning
+- **Multi-Format Support** - 35+ file formats including code, docs, PDFs
+- **MCP Integration** - Native Model Context Protocol server for Claude Code
+- **Production Ready** - REST API, authentication, observability
 
 ### Development Commands (Rust)
 
@@ -568,6 +576,63 @@ impl MmapIndex {
     }
 }
 ```
+
+#### 6. Hybrid Search
+
+Vyakti supports hybrid search that combines semantic vector search with BM25 keyword search:
+
+```rust
+use vyakti_core::{HybridSearcher, FusionStrategy};
+use vyakti_keyword::KeywordConfig;
+
+// Build hybrid index
+let keyword_config = KeywordConfig {
+    enabled: true,
+    k1: 1.2,  // Term frequency saturation
+    b: 0.75,  // Length normalization
+};
+
+let index_path = builder
+    .build_index_hybrid("my-index", Some(keyword_config))
+    .await?;
+
+// Search with fusion strategy
+let searcher = HybridSearcher::load(
+    &index_path,
+    backend,
+    embedding_provider,
+    FusionStrategy::RRF { k: 60 },  // Reciprocal Rank Fusion
+    documents,
+)?;
+
+let results = searcher.search("async programming", 10).await?;
+```
+
+**Available Fusion Strategies:**
+- `RRF { k }` - Reciprocal Rank Fusion (default, balanced)
+- `Weighted { alpha }` - Weighted combination (tunable)
+- `Cascade { threshold }` - Keyword first, fallback to vector
+- `VectorOnly` - Semantic search only
+- `KeywordOnly` - BM25 search only
+
+**CLI Usage:**
+```bash
+# Build hybrid index
+vyakti build my-code --input ./src --hybrid --compact
+
+# Search with different strategies
+vyakti search my-code "auth handler" --fusion rrf
+vyakti search my-code "database" --fusion weighted --fusion-param 0.7
+vyakti search my-code "handleRequest" --fusion keyword-only
+```
+
+**When to use:**
+- ✅ Code search (function names, identifiers)
+- ✅ Technical documentation
+- ✅ Mixed natural language + technical terms
+- ❌ Pure natural language (vector-only is sufficient)
+
+See [HYBRID_SEARCH.md](./HYBRID_SEARCH.md) for comprehensive documentation.
 
 ### Key Implementation Patterns
 

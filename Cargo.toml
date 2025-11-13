@@ -4,12 +4,14 @@ members = [
     "crates/vyakti-common",
     "crates/vyakti-storage",
     "crates/vyakti-embedding",
+    "crates/vyakti-chunking",
     "crates/vyakti-core",
+    "crates/vyakti-keyword",
     "crates/vyakti-backend-hnsw",
     "crates/vyakti-backend-diskann",
     "crates/vyakti-proto",
     "crates/vyakti-server",
-    "crates/vyakti-cli",
+    "crates/vyakti-cli", "mcp-server",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ homepage = "https://vyakti.dev"
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
 tokio-util = "0.7"
+async-trait = "0.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -69,6 +72,7 @@ reqwest = { version = "0.11", features = ["json"] }
 # Testing
 criterion = "0.5"
 mockall = "0.12"
+tempfile = "3.8"
 
 # ONNX Runtime for embeddings
 ort = "2.0.0-rc.2"
@@ -84,6 +88,9 @@ rand = "0.8"
 rayon = "1.8"
 dashmap = "5.5"
 parking_lot = "0.12"
+
+# Full-text search
+tantivy = "0.22"
 
 [profile.dev]
 opt-level = 0

@@ -1,0 +1,26 @@
+[package]
+name = "vyakti-keyword"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "BM25-based keyword search for Vyakti"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bincode.workspace = true
+parking_lot.workspace = true
+
+# Vyakti dependencies
+vyakti-common = { path = "../vyakti-common" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

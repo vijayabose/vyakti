@@ -11,10 +11,21 @@ repository.workspace = true
 name = "vyakti"
 path = "src/main.rs"
 
+[features]
+default = ["all-formats", "ast-extended"]
+ast = ["vyakti-chunking/ast"]
+ast-extended = ["vyakti-chunking/ast-extended"]
+text-formats = ["vyakti-chunking/text-formats"]
+document-formats = ["vyakti-chunking/document-formats"]
+all-formats = ["vyakti-chunking/all-formats"]
+
 [dependencies]
 vyakti-common = { path = "../vyakti-common" }
 vyakti-core = { path = "../vyakti-core" }
 vyakti-backend-hnsw = { path = "../vyakti-backend-hnsw" }
+vyakti-embedding = { path = "../vyakti-embedding" }
+vyakti-chunking = { path = "../vyakti-chunking" }
+vyakti-keyword = { path = "../vyakti-keyword" }
 
 tokio.workspace = true
 anyhow.workspace = true
@@ -25,5 +36,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+walkdir = "2.4"
 
 [dev-dependencies]

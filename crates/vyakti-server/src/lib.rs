@@ -1,6 +1,7 @@
 //! Vyakti server (REST + gRPC).
 
-pub mod rest;
 pub mod grpc_server;
+pub mod rest;
 
-pub use rest::*;
+// Re-export key types for convenience
+pub use rest::{create_router, AppState};

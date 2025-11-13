@@ -2,8 +2,12 @@
 //!
 //! Provides graph-based vector search with support for selective recomputation.
 
-pub mod graph;
 pub mod builder;
+pub mod graph;
+pub mod pruning;
 pub mod searcher;
 
-pub use graph::HnswGraph;
+pub use builder::HnswBackend;
+pub use graph::{DocumentData, Edge, HnswConfig, HnswGraph, NodeId};
+pub use pruning::{GraphPruner, PruningConfig, PruningStats};
+pub use searcher::HnswSearcher;

@@ -8,5 +8,5 @@
 pub mod csr;
 pub mod index;
 
-pub use csr::CsrGraph;
+pub use csr::{CsrGraph, CsrGraphBuilder};
 pub use index::*;

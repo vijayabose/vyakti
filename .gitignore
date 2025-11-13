@@ -56,3 +56,4 @@ venv/
 
 # Logs
 *.log
+/.mcp.json
