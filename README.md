@@ -14,13 +14,14 @@
 - ✅ MCP Server - Native Rust MCP server for Claude Code integration 🎉
 - ✅ LEANN Compact Mode - 93% storage savings + 60% faster search! 🚀
 - ✅ Hybrid Search - Semantic (vector) + Keyword (BM25) fusion for better accuracy 🔍
+- ✅ llama.cpp Integration - Default embedding provider with automatic model download 🤖
+- ✅ GPU Acceleration - CUDA support via --gpu-layers flag for faster embeddings ⚡
+- ✅ RAG Chat - Question answering over documents with LLM integration 💬
 - ✅ Graph Topology Persistence - Compact indexes fully support disk save/load
 - ✅ Document Chunking - Sentence-aware text chunking + AST-aware code chunking
-- ✅ Configurable Embeddings - Support for multiple Ollama models (mxbai-embed-large default)
-- ✅ Auto-Download Models - Automatic model download if not found locally
+- ✅ Auto-Download Models - Automatic HuggingFace download (mxbai-embed-large, 1024d)
 - ✅ REST API Server - Production ready with compact mode support
 - ✅ HNSW Backend - Full k-NN search with CSR graph storage and pruning
-- ✅ Ollama Integration - Primary embedding provider with model flexibility
 - ✅ Index Persistence - Complete save/load workflow with compact indexes
 - ✅ Performance Benchmarks - Validated 60% search speedup, 93% storage savings
 - ✅ 35+ File Formats - Support for text, markdown, JSON, YAML, PDF, Office docs, code files
@@ -77,41 +78,24 @@ Vyakti is designed as a **complete product** that can be used in four modes:
 
 ### Prerequisites
 
-**⚠️ IMPORTANT: Vyakti requires Ollama to be installed and running for embedding generation.**
+**✨ Zero Configuration Required!**
 
-#### Install Ollama
+Vyakti uses **llama.cpp** for embeddings with automatic model download. No external services needed!
 
-```bash
-# macOS
-brew install ollama
+**System Requirements:**
+- Rust 1.70+ (for building from source)
+- ~1GB disk space for embedding model (downloads automatically on first use)
+- Optional: CUDA-capable GPU for faster embeddings
 
-# Linux (curl method)
-curl -fsSL https://ollama.com/install.sh | sh
+**What Happens on First Run:**
+1. Vyakti automatically downloads `mxbai-embed-large-v1` (Q4_K_M, ~500MB) from HuggingFace
+2. Model cached in `~/.vyakti/models/` for future use
+3. Ready to build and search indexes!
 
-# Or download from https://ollama.com
-```
-
-#### Download Embedding Model
-
-```bash
-# Vyakti will auto-download the default model on first use
-# Default: mxbai-embed-large (1024 dimensions, high quality)
-
-# You can also pre-download models:
-ollama pull mxbai-embed-large    # 1024d, default (recommended)
-ollama pull nomic-embed-text     # 768d, good quality
-ollama pull all-minilm           # 384d, small and fast
-```
-
-#### Start Ollama Server
-
-```bash
-# Start Ollama in a separate terminal
-ollama serve
-
-# Verify it's running
-curl http://localhost:11434/api/tags
-```
+**GPU Acceleration (Optional):**
+- Requires CUDA Toolkit for NVIDIA GPUs
+- Use `--gpu-layers 32` flag to enable GPU acceleration
+- Falls back to CPU if GPU unavailable
 
 ### Install CLI
 
@@ -129,16 +113,26 @@ cargo install --path crates/vyakti-cli
 
 ```bash
 # Create an index from documents (hybrid search enabled by default!)
+# First run will auto-download mxbai-embed-large model (~500MB)
 vyakti build my-docs --input ./documents
 
 # Build with LEANN compact mode (93% storage savings + 60% faster!)
 vyakti build my-docs --input ./documents --compact
+
+# GPU acceleration (offload 32 layers to GPU for faster embeddings)
+vyakti build my-docs --input ./documents --gpu-layers 32
+
+# Custom model and GPU
+vyakti build my-docs --input ./documents --model-path ./my-model.gguf --gpu-layers 64
 
 # Disable hybrid search (vector-only mode)
 vyakti build my-docs --input ./documents --no-hybrid
 
 # Search the index (works transparently with both hybrid and vector-only)
 vyakti search my-docs "vector database concepts" --top-k 10
+
+# Search with GPU (uses same flags as build)
+vyakti search my-docs "machine learning" --gpu-layers 32
 
 # List all indexes
 vyakti list
@@ -194,17 +188,25 @@ Results for "machine learning":
 ```rust
 use vyakti_core::{VyaktiBuilder, VyaktiSearcher};
 use vyakti_backend_hnsw::HnswBackend;
-use vyakti_embedding::providers::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{LlamaCppConfig, LlamaCppProvider, ensure_model};
 use vyakti_common::BackendConfig;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create embedding provider (Ollama with mxbai-embed-large)
-    let embedding_config = OllamaConfig::default(); // Uses mxbai-embed-large, 1024d
-    let embedding_provider = Arc::new(
-        OllamaProvider::new(embedding_config, 1024).await?
-    );
+    // Ensure model is available (auto-downloads if needed)
+    let model_path = ensure_model(None).await?;
+
+    // Create embedding provider (llama.cpp with mxbai-embed-large)
+    let embedding_config = LlamaCppConfig {
+        model_path,
+        n_gpu_layers: 0,  // CPU-only (use 32 for GPU)
+        n_ctx: 512,
+        n_threads: num_cpus::get() as u32,
+        dimension: 1024,
+        normalize: true,
+    };
+    let embedding_provider = Arc::new(LlamaCppProvider::new(embedding_config)?);
 
     // Create backend
     let backend_config = BackendConfig::default();
@@ -246,15 +248,23 @@ async fn main() -> anyhow::Result<()> {
 ```rust
 use vyakti_core::{VyaktiBuilder, VyaktiSearcher};
 use vyakti_backend_hnsw::HnswBackend;
-use vyakti_embedding::providers::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{LlamaCppConfig, LlamaCppProvider, ensure_model};
 use vyakti_common::BackendConfig;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = BackendConfig::default();
-    let embedding_config = OllamaConfig::default();
-    let embedding_provider = Arc::new(OllamaProvider::new(embedding_config, 1024).await?);
+    let model_path = ensure_model(None).await?;
+    let embedding_config = LlamaCppConfig {
+        model_path,
+        n_gpu_layers: 0,
+        n_ctx: 512,
+        n_threads: num_cpus::get() as u32,
+        dimension: 1024,
+        normalize: true,
+    };
+    let embedding_provider = Arc::new(LlamaCppProvider::new(embedding_config)?);
 
     // Load searcher
     let backend = Box::new(HnswBackend::with_config(config));
@@ -341,7 +351,7 @@ tokio = { version = "1", features = ["full"] }
 ```rust
 use vyakti_core::{VyaktiBuilder, VyaktiSearcher};
 use vyakti_backend_hnsw::HnswBackend;
-use vyakti_embedding::providers::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{LlamaCppConfig, LlamaCppProvider, ensure_model};
 use vyakti_common::BackendConfig;
 use std::sync::Arc;
 
@@ -349,10 +359,16 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     // Setup
     let backend_config = BackendConfig::default();
-    let embedding_config = OllamaConfig::default(); // mxbai-embed-large
-    let embedding_provider = Arc::new(
-        OllamaProvider::new(embedding_config, 1024).await?
-    );
+    let model_path = ensure_model(None).await?;
+    let embedding_config = LlamaCppConfig {
+        model_path,
+        n_gpu_layers: 0,  // Use 32 for GPU acceleration
+        n_ctx: 512,
+        n_threads: num_cpus::get() as u32,
+        dimension: 1024,
+        normalize: true,
+    };
+    let embedding_provider = Arc::new(LlamaCppProvider::new(embedding_config)?);
 
     // Build index
     let backend = Box::new(HnswBackend::with_config(backend_config.clone()));
@@ -381,25 +397,28 @@ async fn main() -> anyhow::Result<()> {
 
 ```rust
 use vyakti_common::BackendConfig;
-use vyakti_embedding::providers::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{LlamaCppConfig, LlamaCppProvider};
+use std::path::PathBuf;
 
 // Customize backend configuration
 let backend_config = BackendConfig {
     graph_degree: 32,
     build_complexity: 64,
     search_complexity: 32,
-    ..Default::default()
 };
 
-// Use different embedding model
-let embedding_config = OllamaConfig {
-    base_url: "http://localhost:11434".to_string(),
-    model: "nomic-embed-text".to_string(),  // Use different model
-    timeout_secs: 30,
+// Use custom model with GPU acceleration
+let embedding_config = LlamaCppConfig {
+    model_path: PathBuf::from("/path/to/custom-model.gguf"),
+    n_gpu_layers: 32,  // GPU acceleration
+    n_ctx: 512,
+    n_threads: 8,
+    dimension: 1024,  // Match your model's dimension
+    normalize: true,
 };
 
 let embedding_provider = Arc::new(
-    OllamaProvider::new(embedding_config, 768).await?  // Match model dimension
+    LlamaCppProvider::new(embedding_config)?
 );
 
 let backend = Box::new(HnswBackend::with_config(backend_config));
@@ -409,10 +428,10 @@ let mut builder = VyaktiBuilder::new(backend, embedding_provider);
 use std::collections::HashMap;
 
 let mut metadata = HashMap::new();
-metadata.insert("category".to_string(), "technology".to_string());
-metadata.insert("year".to_string(), "2024".to_string());
+metadata.insert("category".to_string(), serde_json::json!("technology"));
+metadata.insert("year".to_string(), serde_json::json!("2024"));
 
-builder.add_text("Machine learning advances", Some(metadata)).await?;
+builder.add_text("Machine learning advances", Some(metadata));
 ```
 
 **Note:** Metadata filtering is now fully implemented! See [Metadata Filtering](#metadata-filtering) section for examples.
@@ -453,8 +472,11 @@ vyakti build my-docs \
 | `--chunk-overlap <SIZE>` | Overlap between chunks in tokens | `128` | `64` |
 | `--enable-code-chunking` | Enable AST-aware code chunking and index code files (.py, .rs, .java, .ts, .tsx, .cs, .js, .jsx, .go, .c, .cpp, .swift, .kt, .rb, .php) | `false` | - |
 | `--no-chunking` | Disable chunking (use whole docs) | `false` | - |
-| `--embedding-model <MODEL>` | Ollama model name | `mxbai-embed-large` | `nomic-embed-text` |
-| `--embedding-dimension <DIM>` | Embedding vector dimension | `1024` | `768` |
+| `--embedding-model <MODEL>` | Model name (for display only) | `mxbai-embed-large` | - |
+| `--embedding-dimension <DIM>` | Embedding vector dimension | `1024` | - |
+| `--model-path <PATH>` | Path to custom GGUF model file | Auto-download | `./model.gguf` |
+| `--gpu-layers <N>` | GPU layers to offload (0=CPU only) | `0` | `32` |
+| `--model-threads <N>` | Threads for inference | Auto-detect | `8` |
 | `--graph-degree <N>` | Max connections per node | `16` | `32` |
 | `--build-complexity <N>` | Build quality (higher = better) | `64` | `128` |
 | `-v, --verbose` | Verbose output | `false` | - |
@@ -481,24 +503,27 @@ vyakti build my-project --input ./project --enable-code-chunking
 vyakti build docs --input ./files --no-chunking
 ```
 
-**Embedding Model Examples:**
+**GPU and Model Examples:**
 
 ```bash
-# Default model (mxbai-embed-large, 1024d)
+# Default: CPU-only with auto-downloaded model
 vyakti build docs --input ./files
 
-# Use nomic-embed-text (768d) for faster indexing
+# GPU acceleration (offload 32 layers to GPU)
+vyakti build docs --input ./files --gpu-layers 32
+
+# Custom GGUF model
 vyakti build docs --input ./files \
-  --embedding-model nomic-embed-text \
+  --model-path ./my-model.gguf \
   --embedding-dimension 768
 
-# Small and fast model (all-minilm, 384d)
+# Maximum GPU offload with custom threads
 vyakti build docs --input ./files \
-  --embedding-model all-minilm \
-  --embedding-dimension 384
+  --gpu-layers 999 \
+  --model-threads 16
 ```
 
-**Note:** If the specified embedding model is not found locally, Vyakti will automatically download it from Ollama.
+**Note:** On first run, Vyakti automatically downloads `mxbai-embed-large-v1` (~500MB) from HuggingFace. The model is cached in `~/.vyakti/models/` for future use.
 
 #### Search Command
 
@@ -612,19 +637,22 @@ vyakti remove my-docs --index-dir /path/to/indexes --yes
 #### Complete Workflow Example
 
 ```bash
-# 1. Start Ollama (if not running)
-ollama serve
-
-# 2. Build an index with custom settings
+# 1. Build an index with custom settings (auto-downloads model on first run)
 vyakti build my-docs \
   --input ./documents \
   --chunk-size 256 \
   --chunk-overlap 128 \
-  --embedding-model mxbai-embed-large \
+  --gpu-layers 32 \
   --verbose
 
-# 3. Search the index
+# 2. Search the index
 vyakti search my-docs "vector database storage optimization" -k 10
+
+# 3. Build compact index for 93% storage savings
+vyakti build my-docs-compact \
+  --input ./documents \
+  --compact \
+  --gpu-layers 32
 
 # 4. List all indexes
 vyakti list
@@ -695,81 +723,101 @@ vyakti build my-project --input ./project \
 
 ### Embedding Models
 
-Vyakti uses Ollama for embedding generation. Here are the recommended models:
+Vyakti uses **llama.cpp** for embedding generation with automatic model download from HuggingFace.
 
-#### Recommended Models
+#### Default Model
 
-| Model | Dimensions | Quality | Speed | Use Case |
-|-------|------------|---------|-------|----------|
-| **mxbai-embed-large** (default) | 1024 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Best quality, recommended for production |
-| **nomic-embed-text** | 768 | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Good balance of quality and speed |
-| **all-minilm** | 384 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Fast, good for development/testing |
-
-#### Model Selection Guide
-
-**For Production:**
-```bash
-# Best quality - default
-vyakti build docs --input ./files \
-  --embedding-model mxbai-embed-large \
-  --embedding-dimension 1024
-```
-
-**For Balanced Performance:**
-```bash
-# Good quality, faster
-vyakti build docs --input ./files \
-  --embedding-model nomic-embed-text \
-  --embedding-dimension 768
-```
-
-**For Development/Testing:**
-```bash
-# Fast iteration
-vyakti build docs --input ./files \
-  --embedding-model all-minilm \
-  --embedding-dimension 384
-```
+**mxbai-embed-large-v1** (Q4_K_M quantized)
+- **Dimensions**: 1024
+- **Size**: ~500MB
+- **Quality**: ⭐⭐⭐⭐⭐ (Best-in-class)
+- **Source**: HuggingFace (mixedbread-ai/mxbai-embed-large-v1)
+- **Auto-Download**: Yes (on first use)
+- **Storage**: `~/.vyakti/models/mxbai-embed-large-v1.q4_k_m.gguf`
 
 #### Auto-Download Feature
 
-Vyakti automatically downloads models if they're not found locally:
+Vyakti automatically downloads the default model on first use:
 
 ```bash
-# First time using a model
-vyakti build docs --input ./files --embedding-model mxbai-embed-large
+# First time running Vyakti
+$ vyakti build docs --input ./files
 
 # Output shows:
-# → Checking if model 'mxbai-embed-large' exists
-# → Model 'mxbai-embed-large' not found, pulling automatically...
-# 📥 Downloading embedding model 'mxbai-embed-large' (this may take a few minutes)...
-# ✓ Model 'mxbai-embed-large' downloaded successfully
+# → Initializing llama.cpp embedding provider...
+# → Using model: mxbai-embed-large
+# → Downloading model from HuggingFace Hub...
+# → Model downloaded successfully to ~/.vyakti/models/
+# ✓ Embedding provider initialized
+# → Building index...
 ```
 
-You can also pre-download models:
+#### GPU Acceleration
+
+Use `--gpu-layers` to offload computation to GPU for faster embeddings:
 
 ```bash
-# Pre-download models
-ollama pull mxbai-embed-large
-ollama pull nomic-embed-text
-ollama pull all-minilm
+# CPU-only (default)
+vyakti build docs --input ./files
 
-# List installed models
-ollama list
+# GPU acceleration (offload 32 layers)
+vyakti build docs --input ./files --gpu-layers 32
+
+# Maximum GPU offload
+vyakti build docs --input ./files --gpu-layers 999
 ```
 
-#### Custom Ollama Models
+**Performance Impact:**
+- CPU-only: ~100ms per embedding (10K docs ~16 minutes)
+- GPU (32 layers): ~20-50ms per embedding (10K docs ~3-8 minutes)
+- Actual speedup depends on GPU model and batch size
 
-You can use any Ollama model that supports embeddings:
+#### Custom Models
+
+You can use custom GGUF models:
 
 ```bash
-# Use a custom model
+# Use custom GGUF model
 vyakti build docs --input ./files \
-  --embedding-model your-custom-model \
-  --embedding-dimension <model_dimension>
+  --model-path ./path/to/your-model.gguf \
+  --embedding-dimension <model_dimension> \
+  --gpu-layers 32
 ```
 
-**Important:** You must specify the correct dimension for your model. Check the model documentation on [ollama.com/library](https://ollama.com/library) for dimension information.
+**Important:** Ensure you specify the correct dimension for your custom model. Check the model card on HuggingFace for dimension information.
+
+### RAG Chat (Question Answering)
+
+Vyakti includes built-in RAG (Retrieval-Augmented Generation) capabilities for question-answering over documents.
+
+**Architecture:**
+1. Vector search retrieves relevant documents
+2. System builds context from top-k results
+3. LLM generates answer based on context
+4. Supports multi-turn conversations
+
+**Library Usage:**
+```rust
+use vyakti_core::{ChatSession, ask_question};
+use vyakti_common::GenerationConfig;
+
+// One-shot Q&A
+let answer = ask_question(
+    &searcher,
+    llm_provider,  // Your TextGenerationProvider (OpenAI, Claude, etc.)
+    "What is vector search?",
+    5,  // top-k documents
+    &GenerationConfig::default()
+).await?;
+
+// Multi-turn chat
+let mut session = ChatSession::new(searcher, llm_provider, 5);
+let response = session.ask("What is LEANN?", &config).await?;
+```
+
+**LLM Integration:** Implement the `TextGenerationProvider` trait for your preferred LLM (OpenAI, Anthropic Claude, Ollama, etc.)
+
+See `GPU_AND_CHAT_FEATURES.md` for detailed documentation.
 
 ### As a Server
 
@@ -1120,7 +1168,7 @@ vyakti/
 - ✅ **Hybrid Search** - Combine semantic vector search with keyword (BM25) search for improved accuracy
 - ✅ **Graph-Based Recomputation** - Store graph structure, recompute embeddings on-demand (97% storage savings)
 - ✅ **HNSW Backend** - Full Hierarchical Navigable Small World implementation with CSR graph storage
-- ✅ **Configurable Embeddings** - Support for multiple Ollama models (mxbai-embed-large, nomic-embed-text, all-minilm, etc.)
+- ✅ **Configurable Embeddings** - Support for GGUF models via llama.cpp (mxbai-embed-large, nomic-embed-text, all-minilm, etc.)
 - ✅ **Auto-Download Models** - Automatic model download if not found locally
 - ✅ **Document Chunking** - Intelligent text chunking with configurable size and overlap
 - ✅ **AST-Aware Code Chunking** - Language-aware chunking for 13 programming languages (Python, Java, TypeScript, Rust, C#, JavaScript, Go, C, C++, Swift, Kotlin, Ruby, PHP)
@@ -1684,9 +1732,10 @@ The Vyakti MCP server fully supports hybrid search:
 ### Environment Variables
 
 ```bash
-# Ollama settings (required)
-OLLAMA_HOST=http://localhost:11434  # Default Ollama endpoint
-OLLAMA_MODEL=mxbai-embed-large       # Default embedding model (can override with CLI)
+# llama.cpp settings (optional - uses auto-download by default)
+VYAKTI_MODEL_PATH=~/.vyakti/models/mxbai-embed-large-v1.q4_k_m.gguf  # Custom model path
+VYAKTI_GPU_LAYERS=0                   # Number of GPU layers to offload (0 = CPU only)
+VYAKTI_MODEL_THREADS=8                # Number of threads for inference (default: auto-detect)
 
 # Server settings
 VYAKTI_PORT=8080
@@ -1807,7 +1856,7 @@ cargo flamegraph --bench search_performance
 - ✅ Core data structures and types
 - ✅ CSR graph storage with memory mapping
 - ✅ HNSW backend implementation
-- ✅ Ollama embedding provider integration
+- ✅ llama.cpp embedding provider integration with automatic model download
 - ✅ Index persistence (save/load)
 - ✅ CLI tool (build, search, list, remove)
 - ✅ REST API server with authentication
@@ -1877,7 +1926,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Original LEANN Paper: [arXiv:2506.08276](https://arxiv.org/abs/2506.08276)
 - Python LEANN: [GitHub Repository](https://github.com/yichuan-w/LEANN)
 - HNSW Algorithm: [hnswlib](https://github.com/nmslib/hnswlib)
-- Ollama: [ollama.com](https://ollama.com)
+- llama.cpp: [GitHub Repository](https://github.com/ggerganov/llama.cpp)
+- Ollama: [ollama.com](https://ollama.com) (Optional LLM provider for RAG chat)
 
 ## Citation
 
