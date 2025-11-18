@@ -12,6 +12,7 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait = "0.1"
+num_cpus.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

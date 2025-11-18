@@ -80,6 +80,55 @@ pub trait EmbeddingProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Text generation configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationConfig {
+    /// Maximum number of tokens to generate
+    pub max_tokens: usize,
+    /// Temperature for sampling (0.0 = deterministic, higher = more random)
+    pub temperature: f32,
+    /// Top-p (nucleus) sampling parameter
+    pub top_p: f32,
+    /// Number of threads for generation
+    pub n_threads: u32,
+    /// Stop sequences that end generation
+    pub stop_sequences: Vec<String>,
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 512,
+            temperature: 0.7,
+            top_p: 0.9,
+            n_threads: num_cpus::get() as u32,
+            stop_sequences: vec![],
+        }
+    }
+}
+
+/// Text generation provider trait for LLM inference.
+#[async_trait]
+pub trait TextGenerationProvider: Send + Sync {
+    /// Generate text based on a prompt
+    async fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String>;
+
+    /// Generate text with conversation context (chat format)
+    async fn chat(&self, messages: &[(String, String)], config: &GenerationConfig) -> Result<String> {
+        // Default implementation: concatenate messages into a prompt
+        let prompt = messages
+            .iter()
+            .map(|(role, content)| format!("{}: {}", role, content))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.generate(&prompt, config).await
+    }
+
+    /// Get provider name
+    fn name(&self) -> &str;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
