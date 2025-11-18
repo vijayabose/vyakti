@@ -94,7 +94,6 @@ dirs = "5.0"
 llama-cpp-2 = { version = "0.1", default-features = false }
 hf-hub = { version = "0.3", features = ["tokio"] }
 sha2 = "0.10"
-async-trait = "0.1"
 num_cpus = "1.16"
 
 # Full-text search
