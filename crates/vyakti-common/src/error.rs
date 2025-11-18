@@ -15,6 +15,10 @@ pub enum VyaktiError {
     #[error("Embedding error: {0}")]
     Embedding(String),
 
+    /// Text generation error
+    #[error("Generation error: {0}")]
+    Generation(String),
+
     /// Storage/IO error
     #[error("Storage error: {0}")]
     Storage(String),

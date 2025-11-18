@@ -559,6 +559,84 @@ pub struct LlamaCppProvider {
 
 **Thread Safety**: Uses dedicated worker thread with message passing for thread-safe concurrent access. The model and context are owned by the worker thread, and embedding requests are sent via an unbounded channel.
 
+#### GPU Support and Testing
+
+Vyakti supports GPU acceleration for embedding computation via llama.cpp's CUDA backend.
+
+**GPU Configuration**:
+```bash
+# CPU-only (default)
+vyakti build my-docs --input ./documents
+
+# GPU acceleration (offload 32 layers to GPU)
+vyakti build my-docs --input ./documents --gpu-layers 32
+
+# Maximum GPU offload
+vyakti build my-docs --input ./documents --gpu-layers 999
+```
+
+**GPU Testing** (`crates/vyakti-embedding/tests/test_llama_cpp_gpu.rs`):
+- GPU configuration validation (0, 16, 32, 64 layers)
+- CPU vs GPU performance benchmarks
+- Graceful fallback to CPU when GPU unavailable
+- All tests marked with `#[ignore]` to avoid mandatory model downloads
+
+Run GPU tests:
+```bash
+cargo test --package vyakti-embedding --test test_llama_cpp_gpu -- --ignored
+```
+
+### RAG (Retrieval-Augmented Generation) Chat
+
+Vyakti supports question-answering over indexed documents using RAG architecture.
+
+**Location**: `crates/vyakti-core/src/chat.rs`
+
+**Architecture**:
+1. User asks question
+2. Vector search retrieves relevant documents (via `VyaktiSearcher`)
+3. System builds context from retrieved documents
+4. LLM generates answer based on context (via `TextGenerationProvider`)
+
+**Key Components**:
+- `ChatSession`: Multi-turn conversation with history
+- `ask_question()`: One-shot Q&A without conversation state
+- `TextGenerationProvider` trait: Interface for LLM integration
+- `GenerationConfig`: Configure temperature, max_tokens, top_p, etc.
+
+**Example Usage**:
+```rust
+use vyakti_core::{ChatSession, VyaktiSearcher, ask_question};
+use vyakti_common::GenerationConfig;
+use std::sync::Arc;
+
+// One-shot Q&A
+let answer = ask_question(
+    &searcher,
+    llm_provider,
+    "What is vector search?",
+    5,  // top-k documents
+    &GenerationConfig::default()
+).await?;
+
+// Multi-turn chat
+let mut session = ChatSession::new(searcher, llm_provider, 5);
+session.add_system_message("You are a helpful assistant.".to_string());
+
+let response1 = session.ask("What is LEANN?", &config).await?;
+let response2 = session.ask("How does it save storage?", &config).await?;
+```
+
+**LLM Provider Integration**:
+Implement `TextGenerationProvider` trait for your LLM:
+- OpenAI API (GPT-4, GPT-3.5)
+- Anthropic API (Claude)
+- Ollama (local LLMs)
+- Azure OpenAI
+- Custom LLMs
+
+See `GPU_AND_CHAT_FEATURES.md` for detailed documentation.
+
 ### Code Organization Principles
 
 #### 1. Module Boundaries

@@ -3,12 +3,14 @@
 //! Provides the main `VyaktiBuilder` and `VyaktiSearcher` interfaces.
 
 pub mod builder;
+pub mod chat;
 pub mod evaluation;
 pub mod hybrid;
 pub mod persistence;
 pub mod searcher;
 
 pub use builder::{Document, VyaktiBuilder};
+pub use chat::{ChatSession, ask_question};
 pub use evaluation::{
     AggregatedMetrics, EvaluationDataset, QueryMetrics, SearchEvaluator, TestQuery,
 };
