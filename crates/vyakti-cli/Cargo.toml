@@ -12,12 +12,13 @@ name = "vyakti"
 path = "src/main.rs"
 
 [features]
-default = ["all-formats", "ast-extended"]
+default = ["all-formats", "ast-extended", "llama-cpp"]
 ast = ["vyakti-chunking/ast"]
 ast-extended = ["vyakti-chunking/ast-extended"]
 text-formats = ["vyakti-chunking/text-formats"]
 document-formats = ["vyakti-chunking/document-formats"]
 all-formats = ["vyakti-chunking/all-formats"]
+llama-cpp = ["vyakti-embedding/llama-cpp"]
 
 [dependencies]
 vyakti-common = { path = "../vyakti-common" }

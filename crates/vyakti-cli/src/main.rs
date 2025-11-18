@@ -15,10 +15,85 @@ use vyakti_chunking::{ChunkConfig, CodeLanguage, TextChunker};
 use vyakti_common::{Backend, BackendConfig};
 use vyakti_core::{FusionStrategy, HybridSearcher, VyaktiBuilder, VyaktiSearcher};
 use vyakti_embedding::{OllamaConfig, OllamaProvider};
+#[cfg(feature = "llama-cpp")]
+use vyakti_embedding::{LlamaCppConfig, LlamaCppProvider, ensure_model};
 use vyakti_keyword::KeywordConfig;
 
 #[cfg(feature = "ast")]
 use vyakti_chunking::AstChunker;
+
+/// Create an embedding provider based on the provider type
+async fn create_embedding_provider(
+    provider: &str,
+    embedding_model: &str,
+    embedding_dimension: usize,
+    gpu_layers: i32,
+    model_threads: u32,
+    model_path: Option<PathBuf>,
+    verbose: bool,
+) -> Result<Arc<dyn vyakti_common::EmbeddingProvider>> {
+    match provider {
+        #[cfg(feature = "llama-cpp")]
+        "llama-cpp" => {
+            if verbose {
+                println!("  {} Initializing llama.cpp embedding provider...", "→".cyan());
+            }
+
+            // Ensure model is downloaded
+            let model_path = ensure_model(model_path).await
+                .context("Failed to download/locate model")?;
+
+            if verbose {
+                println!("  {} Using model: {}", "→".cyan(), model_path.display());
+                println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
+                println!("  {} GPU layers: {}", "→".cyan(),
+                    if gpu_layers < 0 { "auto".to_string() } else { gpu_layers.to_string() });
+            }
+
+            let config = LlamaCppConfig {
+                model_path,
+                n_gpu_layers: if gpu_layers < 0 { 0 } else { gpu_layers as u32 },
+                n_ctx: 512,
+                n_threads: if model_threads == 0 { num_cpus::get() as u32 } else { model_threads },
+                dimension: embedding_dimension,
+                normalize: true,
+            };
+
+            let provider = LlamaCppProvider::new(config)
+                .context("Failed to initialize llama.cpp provider")?;
+
+            if verbose {
+                println!("  {} Embedding provider initialized", "✓".green());
+            }
+
+            Ok(Arc::new(provider))
+        }
+        "ollama" => {
+            if verbose {
+                println!("  {} Initializing Ollama embedding provider...", "→".cyan());
+                println!("  {} Using model: {}", "→".cyan(), embedding_model);
+                println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
+            }
+
+            let ollama_config = OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                model: embedding_model.to_string(),
+                timeout_secs: 30,
+            };
+
+            let provider = OllamaProvider::new(ollama_config, embedding_dimension)
+                .await
+                .context("Failed to initialize Ollama embedding provider")?;
+
+            if verbose {
+                println!("  {} Embedding provider initialized", "✓".green());
+            }
+
+            Ok(Arc::new(provider))
+        }
+        _ => anyhow::bail!("Unsupported embedding provider: {}. Supported: llama-cpp, ollama", provider),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "vyakti")]
@@ -80,6 +155,22 @@ enum Commands {
         #[arg(long, default_value = "1024")]
         embedding_dimension: usize,
 
+        /// Embedding provider to use (llama-cpp, ollama, openai)
+        #[arg(long, default_value = "llama-cpp")]
+        provider: String,
+
+        /// Number of GPU layers to offload (0 = CPU only, -1 = auto-detect)
+        #[arg(long, default_value = "0")]
+        gpu_layers: i32,
+
+        /// Number of threads for model inference (0 = auto-detect CPU count)
+        #[arg(long, default_value = "0")]
+        model_threads: u32,
+
+        /// Custom model path (overrides default model location)
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+
         /// Enable compact mode (LEANN): prune 95% of embeddings for massive storage savings
         #[arg(long)]
         compact: bool,
@@ -121,6 +212,22 @@ enum Commands {
         /// Embedding dimension (default: 1024 for mxbai-embed-large)
         #[arg(long, default_value = "1024")]
         embedding_dimension: usize,
+
+        /// Embedding provider to use (llama-cpp, ollama, openai)
+        #[arg(long, default_value = "llama-cpp")]
+        provider: String,
+
+        /// Number of GPU layers to offload (0 = CPU only, -1 = auto-detect)
+        #[arg(long, default_value = "0")]
+        gpu_layers: i32,
+
+        /// Number of threads for model inference (0 = auto-detect CPU count)
+        #[arg(long, default_value = "0")]
+        model_threads: u32,
+
+        /// Custom model path (overrides default model location)
+        #[arg(long)]
+        model_path: Option<PathBuf>,
 
         /// Maximum score threshold (lower = more relevant). Results with score > threshold are filtered out.
         /// Example: --max-score 0.5 keeps only results with score ≤ 0.5
@@ -235,6 +342,7 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
 }
 
 /// Build an index from input files
+#[allow(clippy::too_many_arguments)]
 async fn build_index(
     name: String,
     input: PathBuf,
@@ -246,6 +354,10 @@ async fn build_index(
     no_chunking: bool,
     embedding_model: String,
     embedding_dimension: usize,
+    provider: String,
+    gpu_layers: i32,
+    model_threads: u32,
+    model_path: Option<PathBuf>,
     compact: bool,
     no_hybrid: bool,
     bm25_k1: f32,
@@ -360,27 +472,16 @@ async fn build_index(
 
     // Create backend and embedding provider
     let backend = Box::new(HnswBackend::with_config(config.clone()));
-    let ollama_config = OllamaConfig {
-        base_url: "http://localhost:11434".to_string(),
-        model: embedding_model.clone(),
-        timeout_secs: 30,
-    };
 
-    if verbose {
-        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
-        println!("  {} Using model: {}", "→".cyan(), embedding_model);
-        println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
-    }
-
-    let embedding_provider = Arc::new(
-        OllamaProvider::new(ollama_config, embedding_dimension)
-            .await
-            .context("Failed to initialize Ollama embedding provider")?,
-    );
-
-    if verbose {
-        println!("  {} Embedding provider initialized", "✓".green());
-    }
+    let embedding_provider = create_embedding_provider(
+        &provider,
+        &embedding_model,
+        embedding_dimension,
+        gpu_layers,
+        model_threads,
+        model_path,
+        verbose,
+    ).await?;
 
     // Create builder
     let mut builder = VyaktiBuilder::with_config(backend, embedding_provider, config);
@@ -711,6 +812,7 @@ async fn build_index(
 }
 
 /// Search an index
+#[allow(clippy::too_many_arguments)]
 async fn search_index(
     name: String,
     query: String,
@@ -718,6 +820,10 @@ async fn search_index(
     index_dir: PathBuf,
     embedding_model: String,
     embedding_dimension: usize,
+    provider: String,
+    gpu_layers: i32,
+    model_threads: u32,
+    model_path: Option<PathBuf>,
     max_score: Option<f32>,
     min_relevance: Option<f32>,
     show_relevance: bool,
@@ -746,27 +852,16 @@ async fn search_index(
 
     // Create backend and embedding provider for searching
     let backend = Box::new(HnswBackend::new());
-    let ollama_config = OllamaConfig {
-        base_url: "http://localhost:11434".to_string(),
-        model: embedding_model.clone(),
-        timeout_secs: 30,
-    };
 
-    if verbose {
-        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
-        println!("  {} Using model: {}", "→".cyan(), embedding_model);
-        println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
-    }
-
-    let embedding_provider = Arc::new(
-        OllamaProvider::new(ollama_config, embedding_dimension)
-            .await
-            .context("Failed to initialize Ollama embedding provider")?,
-    );
-
-    if verbose {
-        println!("  {} Embedding provider initialized", "✓".green());
-    }
+    let embedding_provider = create_embedding_provider(
+        &provider,
+        &embedding_model,
+        embedding_dimension,
+        gpu_layers,
+        model_threads,
+        model_path,
+        verbose,
+    ).await?;
 
     // Load the index from disk
     if verbose {
@@ -1111,6 +1206,10 @@ async fn main() -> Result<()> {
             no_chunking,
             embedding_model,
             embedding_dimension,
+            provider,
+            gpu_layers,
+            model_threads,
+            model_path,
             compact,
             no_hybrid,
             bm25_k1,
@@ -1132,6 +1231,10 @@ async fn main() -> Result<()> {
                 no_chunking,
                 embedding_model,
                 embedding_dimension,
+                provider,
+                gpu_layers,
+                model_threads,
+                model_path,
                 compact,
                 no_hybrid,
                 bm25_k1,
@@ -1147,6 +1250,10 @@ async fn main() -> Result<()> {
             index_dir,
             embedding_model,
             embedding_dimension,
+            provider,
+            gpu_layers,
+            model_threads,
+            model_path,
             max_score,
             min_relevance,
             show_relevance,
@@ -1162,6 +1269,10 @@ async fn main() -> Result<()> {
                 index_dir,
                 embedding_model,
                 embedding_dimension,
+                provider,
+                gpu_layers,
+                model_threads,
+                model_path,
                 max_score,
                 min_relevance,
                 show_relevance,
