@@ -546,8 +546,7 @@ pub struct LlamaCppConfig {
 }
 
 pub struct LlamaCppProvider {
-    model: Arc<LlamaModel>,
-    context: Arc<Mutex<LlamaContext>>,
+    sender: mpsc::UnboundedSender<EmbeddingRequest>,
     config: LlamaCppConfig,
 }
 ```
@@ -558,7 +557,7 @@ pub struct LlamaCppProvider {
 3. Copy to local cache directory
 4. Initialize llama.cpp with the model
 
-**Thread Safety**: Uses `Arc<Mutex<LlamaContext>>` for safe concurrent access
+**Thread Safety**: Uses dedicated worker thread with message passing for thread-safe concurrent access. The model and context are owned by the worker thread, and embedding requests are sent via an unbounded channel.
 
 ### Code Organization Principles
 

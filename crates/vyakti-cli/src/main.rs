@@ -14,7 +14,7 @@ use vyakti_backend_hnsw::HnswBackend;
 use vyakti_chunking::{ChunkConfig, CodeLanguage, TextChunker};
 use vyakti_common::{Backend, BackendConfig};
 use vyakti_core::{FusionStrategy, HybridSearcher, VyaktiBuilder, VyaktiSearcher};
-use vyakti_embedding::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{LlamaCppProvider, LlamaCppConfig, ensure_model};
 use vyakti_keyword::KeywordConfig;
 
 #[cfg(feature = "ast")]
@@ -80,6 +80,18 @@ enum Commands {
         #[arg(long, default_value = "1024")]
         embedding_dimension: usize,
 
+        /// Path to custom GGUF model file (optional, overrides default model)
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+
+        /// Number of GPU layers to offload (0 = CPU only, default: 0)
+        #[arg(long, default_value = "0")]
+        gpu_layers: u32,
+
+        /// Number of threads for model inference (default: auto-detect CPU count)
+        #[arg(long)]
+        model_threads: Option<u32>,
+
         /// Enable compact mode (LEANN): prune 95% of embeddings for massive storage savings
         #[arg(long)]
         compact: bool,
@@ -121,6 +133,18 @@ enum Commands {
         /// Embedding dimension (default: 1024 for mxbai-embed-large)
         #[arg(long, default_value = "1024")]
         embedding_dimension: usize,
+
+        /// Path to custom GGUF model file (optional, overrides default model)
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+
+        /// Number of GPU layers to offload (0 = CPU only, default: 0)
+        #[arg(long, default_value = "0")]
+        gpu_layers: u32,
+
+        /// Number of threads for model inference (default: auto-detect CPU count)
+        #[arg(long)]
+        model_threads: Option<u32>,
 
         /// Maximum score threshold (lower = more relevant). Results with score > threshold are filtered out.
         /// Example: --max-score 0.5 keeps only results with score ≤ 0.5
@@ -246,6 +270,9 @@ async fn build_index(
     no_chunking: bool,
     embedding_model: String,
     embedding_dimension: usize,
+    model_path: Option<PathBuf>,
+    gpu_layers: u32,
+    model_threads: Option<u32>,
     compact: bool,
     no_hybrid: bool,
     bm25_k1: f32,
@@ -360,22 +387,40 @@ async fn build_index(
 
     // Create backend and embedding provider
     let backend = Box::new(HnswBackend::with_config(config.clone()));
-    let ollama_config = OllamaConfig {
-        base_url: "http://localhost:11434".to_string(),
-        model: embedding_model.clone(),
-        timeout_secs: 30,
-    };
 
     if verbose {
-        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
+        println!("  {} Initializing llama.cpp embedding provider...", "→".cyan());
         println!("  {} Using model: {}", "→".cyan(), embedding_model);
         println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
     }
 
+    // Ensure model is available (download if necessary)
+    let model_file_path = ensure_model(model_path)
+        .await
+        .context("Failed to ensure model is available")?;
+
+    if verbose {
+        println!("  {} Model loaded from: {}", "✓".green(), model_file_path.display());
+    }
+
+    // Create llama.cpp config
+    let llama_config = LlamaCppConfig {
+        model_path: model_file_path,
+        n_gpu_layers: gpu_layers,
+        n_ctx: 512,
+        n_threads: model_threads.unwrap_or_else(|| num_cpus::get() as u32),
+        dimension: embedding_dimension,
+        normalize: true,
+    };
+
+    if verbose {
+        println!("  {} GPU layers: {}", "→".cyan(), gpu_layers);
+        println!("  {} Threads: {}", "→".cyan(), llama_config.n_threads);
+    }
+
     let embedding_provider = Arc::new(
-        OllamaProvider::new(ollama_config, embedding_dimension)
-            .await
-            .context("Failed to initialize Ollama embedding provider")?,
+        LlamaCppProvider::new(llama_config)
+            .context("Failed to initialize llama.cpp embedding provider")?,
     );
 
     if verbose {
@@ -718,6 +763,9 @@ async fn search_index(
     index_dir: PathBuf,
     embedding_model: String,
     embedding_dimension: usize,
+    model_path: Option<PathBuf>,
+    gpu_layers: u32,
+    model_threads: Option<u32>,
     max_score: Option<f32>,
     min_relevance: Option<f32>,
     show_relevance: bool,
@@ -745,23 +793,41 @@ async fn search_index(
     }
 
     // Create backend and embedding provider for searching
-    let backend = Box::new(HnswBackend::new());
-    let ollama_config = OllamaConfig {
-        base_url: "http://localhost:11434".to_string(),
-        model: embedding_model.clone(),
-        timeout_secs: 30,
-    };
+    let _backend = Box::new(HnswBackend::new());
 
     if verbose {
-        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
+        println!("  {} Initializing llama.cpp embedding provider...", "→".cyan());
         println!("  {} Using model: {}", "→".cyan(), embedding_model);
         println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
     }
 
+    // Ensure model is available (download if necessary)
+    let model_file_path = ensure_model(model_path)
+        .await
+        .context("Failed to ensure model is available")?;
+
+    if verbose {
+        println!("  {} Model loaded from: {}", "✓".green(), model_file_path.display());
+    }
+
+    // Create llama.cpp config
+    let llama_config = LlamaCppConfig {
+        model_path: model_file_path,
+        n_gpu_layers: gpu_layers,
+        n_ctx: 512,
+        n_threads: model_threads.unwrap_or_else(|| num_cpus::get() as u32),
+        dimension: embedding_dimension,
+        normalize: true,
+    };
+
+    if verbose {
+        println!("  {} GPU layers: {}", "→".cyan(), gpu_layers);
+        println!("  {} Threads: {}", "→".cyan(), llama_config.n_threads);
+    }
+
     let embedding_provider = Arc::new(
-        OllamaProvider::new(ollama_config, embedding_dimension)
-            .await
-            .context("Failed to initialize Ollama embedding provider")?,
+        LlamaCppProvider::new(llama_config)
+            .context("Failed to initialize llama.cpp embedding provider")?,
     );
 
     if verbose {
@@ -1111,6 +1177,9 @@ async fn main() -> Result<()> {
             no_chunking,
             embedding_model,
             embedding_dimension,
+            model_path,
+            gpu_layers,
+            model_threads,
             compact,
             no_hybrid,
             bm25_k1,
@@ -1132,6 +1201,9 @@ async fn main() -> Result<()> {
                 no_chunking,
                 embedding_model,
                 embedding_dimension,
+                model_path,
+                gpu_layers,
+                model_threads,
                 compact,
                 no_hybrid,
                 bm25_k1,
@@ -1147,6 +1219,9 @@ async fn main() -> Result<()> {
             index_dir,
             embedding_model,
             embedding_dimension,
+            model_path,
+            gpu_layers,
+            model_threads,
             max_score,
             min_relevance,
             show_relevance,
@@ -1162,6 +1237,9 @@ async fn main() -> Result<()> {
                 index_dir,
                 embedding_model,
                 embedding_dimension,
+                model_path,
+                gpu_layers,
+                model_threads,
                 max_score,
                 min_relevance,
                 show_relevance,
