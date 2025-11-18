@@ -169,11 +169,16 @@ Register backends in `registry.py` (`BACKEND_REGISTRY` dict).
 - `embedding_server_manager.py` - ZMQ-based embedding server lifecycle
 - Backend-specific servers: `hnsw_embedding_server.py`, `diskann_embedding_server.py`
 
-**Modes:**
+**Python (Reference) Modes:**
 - `sentence-transformers` - Local HuggingFace models (default)
 - `openai` - OpenAI API or compatible endpoints
 - `ollama` - Local Ollama server
 - `mlx` - Apple Silicon optimized (ARM64 macOS only)
+
+**Rust (Vyakti) Providers:**
+- `llama-cpp` - Local models via llama.cpp (default, auto-downloads mxbai-embed-large)
+- `onnx` - ONNX Runtime for local models
+- Future: OpenAI API, custom providers
 
 ### Graph-Based Recomputation
 
@@ -482,6 +487,70 @@ cargo bench --bench search_performance
 # With flamegraph profiling
 cargo flamegraph --bench search_performance
 ```
+
+### Embedding Provider: llama.cpp (Default)
+
+Vyakti uses **llama.cpp** as the default embedding provider with automatic model management:
+
+#### Features
+- **Automatic Model Download**: Downloads mxbai-embed-large-v1 from HuggingFace on first use
+- **GPU Acceleration**: Supports offloading layers to GPU via `--gpu-layers` flag
+- **CPU Optimized**: Efficient multi-threaded CPU inference
+- **Zero Configuration**: Works out of the box with sensible defaults
+
+#### Model Details
+- **Default Model**: mixedbread-ai/mxbai-embed-large-v1 (Q4_K_M quantized)
+- **Dimensions**: 1024
+- **Size**: ~500MB
+- **Storage**: `~/.vyakti/models/mxbai-embed-large-v1.q4_k_m.gguf`
+
+#### Usage
+
+```bash
+# CPU-only (default)
+vyakti build my-docs --input ./documents
+
+# With GPU acceleration (requires CUDA)
+vyakti build my-docs --input ./documents --gpu-layers 32
+
+# With custom model
+vyakti build my-docs --input ./documents --model-path /path/to/model.gguf
+
+# Customize thread count
+vyakti build my-docs --input ./documents --model-threads 8
+```
+
+#### Implementation Details
+
+**Key Files**:
+- `crates/vyakti-embedding/src/providers/llama_cpp.rs` - Provider implementation
+- `crates/vyakti-embedding/src/download.rs` - Model download and caching
+
+**Architecture**:
+```rust
+pub struct LlamaCppConfig {
+    pub model_path: PathBuf,
+    pub n_gpu_layers: u32,      // GPU layers
+    pub n_ctx: u32,              // Context size
+    pub n_threads: u32,          // CPU threads
+    pub dimension: usize,        // Embedding dimension
+    pub normalize: bool,         // Normalize vectors
+}
+
+pub struct LlamaCppProvider {
+    model: Arc<LlamaModel>,
+    context: Arc<Mutex<LlamaContext>>,
+    config: LlamaCppConfig,
+}
+```
+
+**Model Download Flow**:
+1. Check if model exists at `~/.vyakti/models/`
+2. If not found, download from HuggingFace Hub using `hf-hub` crate
+3. Copy to local cache directory
+4. Initialize llama.cpp with the model
+
+**Thread Safety**: Uses `Arc<Mutex<LlamaContext>>` for safe concurrent access
 
 ### Code Organization Principles
 

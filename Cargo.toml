@@ -84,6 +84,14 @@ rand = "0.8"
 rayon = "1.8"
 dashmap = "5.5"
 parking_lot = "0.12"
+dirs = "5.0"
+
+# Embedding providers
+llama-cpp-2 = { version = "0.1", default-features = false }
+hf-hub = { version = "0.3", features = ["tokio"] }
+sha2 = "0.10"
+async-trait = "0.1"
+num_cpus = "1.16"
 
 [profile.dev]
 opt-level = 0

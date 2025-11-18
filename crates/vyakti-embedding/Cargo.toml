@@ -16,18 +16,31 @@ anyhow.workspace = true
 serde.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
 
 # ONNX Runtime for local models
 ort = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 ndarray.workspace = true
 
+# llama.cpp for local embeddings
+llama-cpp-2 = { workspace = true, optional = true }
+num_cpus = { workspace = true, optional = true }
+
+# HuggingFace Hub for model downloads
+hf-hub = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+indicatif.workspace = true
+
 # Cache
 dashmap.workspace = true
 
 [features]
-default = ["onnx"]
+default = ["llama-cpp"]
 onnx = ["ort", "tokenizers"]
+llama-cpp = ["llama-cpp-2", "hf-hub", "sha2", "num_cpus"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

@@ -142,6 +142,24 @@ sudo apt-get install build-essential cmake clang libomp-dev pkg-config
 choco install llvm cmake
 ```
 
+### Default Embedding Model
+
+Vyakti uses **llama.cpp** with the **mxbai-embed-large** model by default:
+- **Model**: mixedbread-ai/mxbai-embed-large-v1 (Q4_K_M quantized)
+- **Dimensions**: 1024
+- **Size**: ~500MB
+- **Download**: Automatically downloaded on first use to `~/.vyakti/models/`
+
+The model is downloaded from HuggingFace Hub on first use. To use GPU acceleration:
+
+```bash
+# Build with GPU layers offloaded (requires CUDA)
+vyakti build my-docs --input ./documents --gpu-layers 32
+
+# CPU-only (default)
+vyakti build my-docs --input ./documents --gpu-layers 0
+```
+
 ### Install from Source
 
 ```bash
@@ -381,9 +399,9 @@ vyakti/
 - ✅ **Graph-Based Recomputation** - Store graph structure, recompute embeddings on-demand
 - ✅ **Multiple Backends** - HNSW, DiskANN with pluggable architecture
 - ✅ **Embedding Models**
-  - Local: SentenceTransformers, Ollama
+  - Local: llama.cpp (default, with automatic model download), SentenceTransformers, ONNX Runtime
   - Cloud: OpenAI, Cohere, Voyage
-  - Custom: ONNX Runtime support
+  - Custom: Bring your own GGUF models
 - ✅ **Metadata Filtering** - SQL-like queries with rich operators
 - ✅ **AST-Aware Chunking** - Language-aware code chunking (Python, Java, C#, TypeScript, Rust)
 - ✅ **Hybrid Search** - Combine semantic + keyword search
@@ -446,10 +464,12 @@ backend = "hnsw"
 dimension = 384
 
 [embedding]
-provider = "sentence-transformers"
-model = "all-MiniLM-L6-v2"
-batch_size = 32
-device = "cuda"  # or "cpu", "mps"
+provider = "llama-cpp"  # Default provider
+model = "mxbai-embed-large"  # Automatically downloaded on first use
+dimension = 1024
+gpu_layers = 0  # Number of layers to offload to GPU (0 = CPU only)
+threads = "auto"  # Number of CPU threads (auto-detect)
+normalize = true  # Normalize embeddings
 
 [hnsw]
 graph_degree = 32
