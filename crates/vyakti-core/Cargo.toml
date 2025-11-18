@@ -11,6 +11,8 @@ repository.workspace = true
 vyakti-common = { path = "../vyakti-common" }
 vyakti-storage = { path = "../vyakti-storage" }
 vyakti-embedding = { path = "../vyakti-embedding" }
+vyakti-backend-hnsw = { path = "../vyakti-backend-hnsw" }
+vyakti-keyword = { path = "../vyakti-keyword" }
 
 tokio.workspace = true
 thiserror.workspace = true
@@ -19,10 +21,22 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 dashmap.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 mockall.workspace = true
+tempfile.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
+async-trait.workspace = true
+
+[[bench]]
+name = "compact_mode_benchmark"
+harness = false
+
+[[bench]]
+name = "hybrid_search_benchmark"
+harness = false
 
 [features]
 default = []

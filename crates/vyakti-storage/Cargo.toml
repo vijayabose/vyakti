@@ -18,3 +18,4 @@ bincode.workspace = true
 memmap2.workspace = true
 
 [dev-dependencies]
+tempfile = "3.8"

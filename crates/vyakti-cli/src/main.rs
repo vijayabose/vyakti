@@ -12,9 +12,10 @@ use walkdir::WalkDir;
 
 use vyakti_backend_hnsw::HnswBackend;
 use vyakti_chunking::{ChunkConfig, CodeLanguage, TextChunker};
-use vyakti_common::BackendConfig;
-use vyakti_core::{VyaktiBuilder, VyaktiSearcher};
-use vyakti_embedding::{ensure_model, LlamaCppConfig, LlamaCppProvider};
+use vyakti_common::{Backend, BackendConfig};
+use vyakti_core::{FusionStrategy, HybridSearcher, VyaktiBuilder, VyaktiSearcher};
+use vyakti_embedding::{OllamaConfig, OllamaProvider};
+use vyakti_keyword::KeywordConfig;
 
 #[cfg(feature = "ast")]
 use vyakti_chunking::AstChunker;
@@ -83,17 +84,18 @@ enum Commands {
         #[arg(long)]
         compact: bool,
 
-        /// Number of GPU layers to offload (0 = CPU only, -1 = all layers)
-        #[arg(long, default_value = "0")]
-        gpu_layers: i32,
-
-        /// Path to custom model file (optional, will download default if not specified)
+        /// Disable hybrid search (hybrid search is enabled by default for better accuracy)
+        /// Hybrid search combines semantic vector search with BM25 keyword search
         #[arg(long)]
-        model_path: Option<PathBuf>,
+        no_hybrid: bool,
 
-        /// Number of threads for inference (default: auto-detect CPU count)
-        #[arg(long)]
-        model_threads: Option<u32>,
+        /// BM25 k1 parameter (term frequency saturation, default: 1.2)
+        #[arg(long, default_value = "1.2")]
+        bm25_k1: f32,
+
+        /// BM25 b parameter (length normalization, default: 0.75)
+        #[arg(long, default_value = "0.75")]
+        bm25_b: f32,
     },
 
     /// Search an existing index
@@ -141,17 +143,18 @@ enum Commands {
         #[arg(long)]
         show_metadata: Option<String>,
 
-        /// Number of GPU layers to offload (0 = CPU only, -1 = all layers)
-        #[arg(long, default_value = "0")]
-        gpu_layers: i32,
+        /// Fusion strategy for hybrid search: rrf, weighted, cascade, vector-only, keyword-only
+        /// (default: rrf - Reciprocal Rank Fusion)
+        #[arg(long, default_value = "rrf")]
+        fusion: String,
 
-        /// Path to custom model file (optional, will download default if not specified)
+        /// Fusion parameter: k for RRF (default: 60), alpha for weighted (default: 0.5), threshold for cascade (default: 5)
         #[arg(long)]
-        model_path: Option<PathBuf>,
+        fusion_param: Option<f32>,
 
-        /// Number of threads for inference (default: auto-detect CPU count)
+        /// Enable result highlighting (shows matched text snippets with highlighted keywords)
         #[arg(long)]
-        model_threads: Option<u32>,
+        highlight: bool,
     },
 
     /// List all indexes
@@ -214,6 +217,23 @@ fn format_metadata_value(value: &serde_json::Value) -> String {
     }
 }
 
+/// Expand tilde (~) in path to home directory
+fn expand_tilde(path: &PathBuf) -> PathBuf {
+    if let Some(path_str) = path.to_str() {
+        if path_str.starts_with("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                let home_path = PathBuf::from(home);
+                return home_path.join(&path_str[2..]);
+            }
+        } else if path_str == "~" {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home);
+            }
+        }
+    }
+    path.clone()
+}
+
 /// Build an index from input files
 async fn build_index(
     name: String,
@@ -227,12 +247,16 @@ async fn build_index(
     embedding_model: String,
     embedding_dimension: usize,
     compact: bool,
-    gpu_layers: i32,
-    model_path: Option<PathBuf>,
-    model_threads: Option<u32>,
+    no_hybrid: bool,
+    bm25_k1: f32,
+    bm25_b: f32,
     verbose: bool,
 ) -> Result<()> {
     let start = Instant::now();
+
+    // Expand tilde in paths
+    let input = expand_tilde(&input);
+    let output = expand_tilde(&output);
 
     println!("{}", format!("Building index '{}'", name).green().bold());
 
@@ -336,44 +360,22 @@ async fn build_index(
 
     // Create backend and embedding provider
     let backend = Box::new(HnswBackend::with_config(config.clone()));
+    let ollama_config = OllamaConfig {
+        base_url: "http://localhost:11434".to_string(),
+        model: embedding_model.clone(),
+        timeout_secs: 30,
+    };
 
     if verbose {
-        println!("  {} Initializing llama.cpp embedding provider...", "→".cyan());
+        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
         println!("  {} Using model: {}", "→".cyan(), embedding_model);
         println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
     }
 
-    // Ensure model is available (download if necessary)
-    if verbose {
-        println!("  {} Ensuring model is available...", "→".cyan());
-    }
-
-    let model_file_path = ensure_model(model_path)
-        .await
-        .context("Failed to ensure model is available")?;
-
-    if verbose {
-        println!("  {} Using model at: {}", "✓".green(), model_file_path.display());
-    }
-
-    // Create llama.cpp config
-    let llama_config = LlamaCppConfig {
-        model_path: model_file_path,
-        n_gpu_layers: gpu_layers.max(0) as u32,
-        n_ctx: 512,
-        n_threads: model_threads.unwrap_or_else(|| num_cpus::get() as u32),
-        dimension: embedding_dimension,
-        normalize: true,
-    };
-
-    if verbose {
-        println!("  {} GPU layers: {}", "→".cyan(), llama_config.n_gpu_layers);
-        println!("  {} Threads: {}", "→".cyan(), llama_config.n_threads);
-    }
-
     let embedding_provider = Arc::new(
-        LlamaCppProvider::new(llama_config)
-            .context("Failed to initialize llama.cpp embedding provider")?,
+        OllamaProvider::new(ollama_config, embedding_dimension)
+            .await
+            .context("Failed to initialize Ollama embedding provider")?,
     );
 
     if verbose {
@@ -537,76 +539,171 @@ async fn build_index(
     println!("  {} Building index...", "→".cyan());
     let index_path = output.join(&name);
 
-    if compact {
-        println!("  {} Using compact mode (LEANN) - will prune embeddings for storage savings", "→".cyan());
-        let (path, stats) = builder
-            .build_index_compact(&index_path, None)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to build compact index '{}'. Path: {:?}",
-                    name, index_path
-                )
-            })?;
-
-        let elapsed = start.elapsed();
-        println!(
-            "{}",
-            format!(
-                "✓ Compact index '{}' built successfully in {:.2}s",
-                name,
-                elapsed.as_secs_f64()
-            )
-            .green()
-            .bold()
-        );
-
-        // Display pruning statistics
-        println!("\n{}", "Compact Mode Statistics:".cyan().bold());
-        println!("  {} Storage Savings: {:.1}%", "→".cyan(), stats.savings_percent);
-        println!("  {} Total Nodes: {}", "→".cyan(), stats.total_nodes);
-        println!("  {} Embeddings Kept: {}", "→".cyan(), stats.embeddings_kept);
-        println!("  {} Embeddings Pruned: {}", "→".cyan(), stats.embeddings_pruned);
-        println!("  {} Original Size: {}", "→".cyan(), stats.storage_before_human());
-        println!("  {} Compact Size: {}", "→".cyan(), stats.storage_after_human());
-        println!("  {} Retention Rate: {:.1}%", "→".cyan(), stats.retention_rate() * 100.0);
-
-        if verbose {
-            println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
-            if skipped_files > 0 {
-                println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
-            }
-            println!("  {} Index saved to: {:?}", "→".cyan(), path);
-        }
+    // Prepare keyword config if hybrid search is enabled
+    let hybrid = !no_hybrid; // Hybrid is enabled by default
+    let keyword_config = if hybrid {
+        println!("  {} Hybrid search enabled (BM25: k1={}, b={})", "→".cyan(), bm25_k1, bm25_b);
+        Some(KeywordConfig {
+            enabled: true,
+            k1: bm25_k1,
+            b: bm25_b,
+        })
     } else {
-        builder
-            .build_index(&index_path)
-            .await
-            .with_context(|| {
+        println!("  {} Vector-only mode (hybrid search disabled)", "→".cyan());
+        None
+    };
+
+    match (hybrid, compact) {
+        (true, true) => {
+            // Hybrid + Compact mode
+            println!("  {} Using hybrid + compact mode (semantic + keyword + LEANN storage)", "→".cyan());
+            let (path, stats) = builder
+                .build_index_hybrid_compact(&index_path, keyword_config, None)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to build hybrid compact index '{}'. Path: {:?}",
+                        name, index_path
+                    )
+                })?;
+
+            let elapsed = start.elapsed();
+            println!(
+                "{}",
                 format!(
-                    "Failed to build index '{}'. Path: {:?}",
-                    name, index_path
+                    "✓ Hybrid compact index '{}' built successfully in {:.2}s",
+                    name,
+                    elapsed.as_secs_f64()
                 )
-            })?;
+                .green()
+                .bold()
+            );
 
-        let elapsed = start.elapsed();
-        println!(
-            "{}",
-            format!(
-                "✓ Index '{}' built successfully in {:.2}s",
-                name,
-                elapsed.as_secs_f64()
-            )
-            .green()
-            .bold()
-        );
+            // Display pruning statistics
+            println!("\n{}", "Compact Mode Statistics:".cyan().bold());
+            println!("  {} Storage Savings: {:.1}%", "→".cyan(), stats.savings_percent);
+            println!("  {} Total Nodes: {}", "→".cyan(), stats.total_nodes);
+            println!("  {} Embeddings Kept: {}", "→".cyan(), stats.embeddings_kept);
+            println!("  {} Embeddings Pruned: {}", "→".cyan(), stats.embeddings_pruned);
+            println!("  {} Original Size: {}", "→".cyan(), stats.storage_before_human());
+            println!("  {} Compact Size: {}", "→".cyan(), stats.storage_after_human());
+            println!("  {} Retention Rate: {:.1}%", "→".cyan(), stats.retention_rate() * 100.0);
 
-        if verbose {
-            println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
-            if skipped_files > 0 {
-                println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
+            if verbose {
+                println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
+                if skipped_files > 0 {
+                    println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
+                }
+                println!("  {} Index saved to: {:?}", "→".cyan(), path);
             }
-            println!("  {} Index saved to: {:?}", "→".cyan(), index_path);
+        }
+        (true, false) => {
+            // Hybrid mode (no compact)
+            println!("  {} Using hybrid search mode (semantic + keyword/BM25)", "→".cyan());
+            let path = builder
+                .build_index_hybrid(&index_path, keyword_config)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to build hybrid index '{}'. Path: {:?}",
+                        name, index_path
+                    )
+                })?;
+
+            let elapsed = start.elapsed();
+            println!(
+                "{}",
+                format!(
+                    "✓ Hybrid index '{}' built successfully in {:.2}s",
+                    name,
+                    elapsed.as_secs_f64()
+                )
+                .green()
+                .bold()
+            );
+
+            if verbose {
+                println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
+                if skipped_files > 0 {
+                    println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
+                }
+                println!("  {} Index saved to: {:?}", "→".cyan(), path);
+            }
+        }
+        (false, true) => {
+            // Compact mode only (existing code)
+            println!("  {} Using compact mode (LEANN) - will prune embeddings for storage savings", "→".cyan());
+            let (path, stats) = builder
+                .build_index_compact(&index_path, None)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to build compact index '{}'. Path: {:?}",
+                        name, index_path
+                    )
+                })?;
+
+            let elapsed = start.elapsed();
+            println!(
+                "{}",
+                format!(
+                    "✓ Compact index '{}' built successfully in {:.2}s",
+                    name,
+                    elapsed.as_secs_f64()
+                )
+                .green()
+                .bold()
+            );
+
+            // Display pruning statistics
+            println!("\n{}", "Compact Mode Statistics:".cyan().bold());
+            println!("  {} Storage Savings: {:.1}%", "→".cyan(), stats.savings_percent);
+            println!("  {} Total Nodes: {}", "→".cyan(), stats.total_nodes);
+            println!("  {} Embeddings Kept: {}", "→".cyan(), stats.embeddings_kept);
+            println!("  {} Embeddings Pruned: {}", "→".cyan(), stats.embeddings_pruned);
+            println!("  {} Original Size: {}", "→".cyan(), stats.storage_before_human());
+            println!("  {} Compact Size: {}", "→".cyan(), stats.storage_after_human());
+            println!("  {} Retention Rate: {:.1}%", "→".cyan(), stats.retention_rate() * 100.0);
+
+            if verbose {
+                println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
+                if skipped_files > 0 {
+                    println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
+                }
+                println!("  {} Index saved to: {:?}", "→".cyan(), path);
+            }
+        }
+        (false, false) => {
+            // Normal mode (existing code)
+            builder
+                .build_index(&index_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to build index '{}'. Path: {:?}",
+                        name, index_path
+                    )
+                })?;
+
+            let elapsed = start.elapsed();
+            println!(
+                "{}",
+                format!(
+                    "✓ Index '{}' built successfully in {:.2}s",
+                    name,
+                    elapsed.as_secs_f64()
+                )
+                .green()
+                .bold()
+            );
+
+            if verbose {
+                println!("  {} Indexed {} documents into {} chunks", "→".cyan(), processed_count, total_chunks);
+                if skipped_files > 0 {
+                    println!("  {} Skipped {} files due to errors", "→".yellow(), skipped_files);
+                }
+                println!("  {} Index saved to: {:?}", "→".cyan(), index_path);
+            }
         }
     }
 
@@ -625,12 +722,15 @@ async fn search_index(
     min_relevance: Option<f32>,
     show_relevance: bool,
     show_metadata: Option<String>,
-    gpu_layers: i32,
-    model_path: Option<PathBuf>,
-    model_threads: Option<u32>,
+    fusion: String,
+    fusion_param: Option<f32>,
+    highlight: bool,
     verbose: bool,
 ) -> Result<()> {
     let start = Instant::now();
+
+    // Expand tilde in index_dir path
+    let index_dir = expand_tilde(&index_dir);
 
     println!(
         "{}",
@@ -646,44 +746,22 @@ async fn search_index(
 
     // Create backend and embedding provider for searching
     let backend = Box::new(HnswBackend::new());
+    let ollama_config = OllamaConfig {
+        base_url: "http://localhost:11434".to_string(),
+        model: embedding_model.clone(),
+        timeout_secs: 30,
+    };
 
     if verbose {
-        println!("  {} Initializing llama.cpp embedding provider...", "→".cyan());
+        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
         println!("  {} Using model: {}", "→".cyan(), embedding_model);
         println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
     }
 
-    // Ensure model is available (download if necessary)
-    if verbose {
-        println!("  {} Ensuring model is available...", "→".cyan());
-    }
-
-    let model_file_path = ensure_model(model_path)
-        .await
-        .context("Failed to ensure model is available")?;
-
-    if verbose {
-        println!("  {} Using model at: {}", "✓".green(), model_file_path.display());
-    }
-
-    // Create llama.cpp config
-    let llama_config = LlamaCppConfig {
-        model_path: model_file_path,
-        n_gpu_layers: gpu_layers.max(0) as u32,
-        n_ctx: 512,
-        n_threads: model_threads.unwrap_or_else(|| num_cpus::get() as u32),
-        dimension: embedding_dimension,
-        normalize: true,
-    };
-
-    if verbose {
-        println!("  {} GPU layers: {}", "→".cyan(), llama_config.n_gpu_layers);
-        println!("  {} Threads: {}", "→".cyan(), llama_config.n_threads);
-    }
-
     let embedding_provider = Arc::new(
-        LlamaCppProvider::new(llama_config)
-            .context("Failed to initialize llama.cpp embedding provider")?,
+        OllamaProvider::new(ollama_config, embedding_dimension)
+            .await
+            .context("Failed to initialize Ollama embedding provider")?,
     );
 
     if verbose {
@@ -695,16 +773,91 @@ async fn search_index(
         println!("  {} Loading index from disk...", "→".cyan());
     }
 
-    let searcher = VyaktiSearcher::load(index_path, backend, embedding_provider)
-        .await
-        .context("Failed to load index")?;
+    // Determine the actual index file path
+    // Hybrid indexes use path/index.json, standard indexes use path as a file
+    let index_file_path = if index_path.join("index.json").exists() {
+        index_path.join("index.json")
+    } else {
+        index_path.clone()
+    };
+
+    // Load index metadata to check for hybrid search
+    let index_data = vyakti_core::load_index(&index_file_path)
+        .context("Failed to load index metadata")?;
+
+    let is_hybrid = index_data.metadata.hybrid_search.as_ref()
+        .map(|h| h.enabled)
+        .unwrap_or(false);
 
     if verbose {
         println!("  {} Index loaded successfully", "✓".green());
+        if is_hybrid {
+            println!("  {} Hybrid search enabled (using {} fusion)", "✓".green(), fusion);
+        } else {
+            println!("  {} Standard vector search", "→".cyan());
+        }
     }
 
-    // Search
-    let all_results = searcher.search(&query, top_k).await?;
+    // Search based on index type
+    let all_results = if is_hybrid {
+        // Parse fusion strategy
+        let strategy = match fusion.as_str() {
+            "rrf" => FusionStrategy::RRF {
+                k: fusion_param.unwrap_or(60.0) as usize,
+            },
+            "weighted" => FusionStrategy::Weighted {
+                alpha: fusion_param.unwrap_or(0.5),
+            },
+            "cascade" => FusionStrategy::Cascade {
+                threshold: fusion_param.unwrap_or(5.0) as usize,
+            },
+            "vector-only" => FusionStrategy::VectorOnly,
+            "keyword-only" => FusionStrategy::KeywordOnly,
+            _ => {
+                println!("{} Unknown fusion strategy '{}', using RRF", "⚠".yellow(), fusion);
+                FusionStrategy::RRF { k: 60 }
+            }
+        };
+
+        if verbose {
+            println!("  {} Using fusion strategy: {:?}", "→".cyan(), strategy);
+        }
+
+        // Create documents list from index data
+        let documents: Vec<(String, std::collections::HashMap<String, serde_json::Value>)> =
+            index_data.documents.iter()
+                .map(|doc| (doc.text.clone(), doc.metadata.clone()))
+                .collect();
+
+        // Create backend and load it
+        let mut backend = Box::new(HnswBackend::new());
+        backend.build(&index_data.vectors, &index_data.metadata.backend_config).await?;
+
+        // Set document data
+        for doc in &index_data.documents {
+            backend.set_document_data(doc.id, doc.text.clone(), doc.metadata.clone());
+        }
+
+        // Create hybrid searcher
+        let hybrid_searcher = HybridSearcher::load(
+            &index_path,
+            backend,
+            embedding_provider.clone(),
+            strategy,
+            documents,
+        )?;
+
+        // Perform hybrid search
+        hybrid_searcher.search(&query, top_k).await?
+    } else {
+        // Standard vector search
+        let backend = Box::new(HnswBackend::new());
+        let searcher = VyaktiSearcher::load(&index_path, backend, embedding_provider.clone())
+            .await
+            .context("Failed to load index")?;
+
+        searcher.search(&query, top_k).await?
+    };
 
     let elapsed = start.elapsed();
 
@@ -801,6 +954,28 @@ async fn search_index(
                 // Verbose mode - show all metadata in raw format
                 println!("   Metadata: {:?}", result.metadata);
             }
+
+            // Show highlights if --highlight flag is enabled and highlights are available
+            if highlight {
+                if let Some(highlights_value) = result.metadata.get("_highlights") {
+                    if let Some(highlights_array) = highlights_value.as_array() {
+                        if !highlights_array.is_empty() {
+                            println!("   {}", "Highlights:".yellow().bold());
+                            for highlight in highlights_array {
+                                if let Some(fragment) = highlight.get("fragment").and_then(|v| v.as_str()) {
+                                    // Remove HTML tags but keep the highlight markers
+                                    let clean_fragment = fragment
+                                        .replace("<b>", "")
+                                        .replace("</b>", "")
+                                        .trim()
+                                        .to_string();
+                                    println!("     • {}", clean_fragment.bright_white());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -809,6 +984,9 @@ async fn search_index(
 
 /// List all indexes
 fn list_indexes(index_dir: PathBuf, verbose: bool) -> Result<()> {
+    // Expand tilde in index_dir path
+    let index_dir = expand_tilde(&index_dir);
+
     println!("{}", "Available indexes:".green().bold());
 
     if !index_dir.exists() {
@@ -854,6 +1032,9 @@ fn list_indexes(index_dir: PathBuf, verbose: bool) -> Result<()> {
 
 /// Remove an index
 fn remove_index(name: String, index_dir: PathBuf, yes: bool) -> Result<()> {
+    // Expand tilde in index_dir path
+    let index_dir = expand_tilde(&index_dir);
+
     let index_path = index_dir.join(&name);
 
     if !index_path.exists() {
@@ -931,6 +1112,9 @@ async fn main() -> Result<()> {
             embedding_model,
             embedding_dimension,
             compact,
+            no_hybrid,
+            bm25_k1,
+            bm25_b,
         } => {
             let config = BackendConfig {
                 graph_degree,
@@ -949,9 +1133,9 @@ async fn main() -> Result<()> {
                 embedding_model,
                 embedding_dimension,
                 compact,
-                gpu_layers,
-                model_path,
-                model_threads,
+                no_hybrid,
+                bm25_k1,
+                bm25_b,
                 cli.verbose,
             )
             .await
@@ -967,9 +1151,9 @@ async fn main() -> Result<()> {
             min_relevance,
             show_relevance,
             show_metadata,
-            gpu_layers,
-            model_path,
-            model_threads,
+            fusion,
+            fusion_param,
+            highlight,
         } => {
             search_index(
                 name,
@@ -982,9 +1166,9 @@ async fn main() -> Result<()> {
                 min_relevance,
                 show_relevance,
                 show_metadata,
-                gpu_layers,
-                model_path,
-                model_threads,
+                fusion,
+                fusion_param,
+                highlight,
                 cli.verbose,
             )
             .await
@@ -1068,5 +1252,151 @@ mod tests {
     fn test_cli_with_verbose() {
         let cli = Cli::parse_from(["vyakti", "-v", "list"]);
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn test_build_hybrid_search_default() {
+        // Default: hybrid search should be enabled (no_hybrid = false)
+        let cli = Cli::parse_from(["vyakti", "build", "test-index", "-i", "/path/to/docs"]);
+        match cli.command {
+            Commands::Build { no_hybrid, .. } => {
+                assert!(!no_hybrid, "Hybrid search should be enabled by default");
+            }
+            _ => panic!("Expected Build command"),
+        }
+    }
+
+    #[test]
+    fn test_build_hybrid_search_disabled() {
+        // With --no-hybrid flag: hybrid search should be disabled
+        let cli = Cli::parse_from([
+            "vyakti",
+            "build",
+            "test-index",
+            "-i",
+            "/path/to/docs",
+            "--no-hybrid",
+        ]);
+        match cli.command {
+            Commands::Build { no_hybrid, .. } => {
+                assert!(no_hybrid, "Hybrid search should be disabled with --no-hybrid flag");
+            }
+            _ => panic!("Expected Build command"),
+        }
+    }
+
+    #[test]
+    fn test_build_custom_bm25_parameters() {
+        // Test custom BM25 parameters
+        let cli = Cli::parse_from([
+            "vyakti",
+            "build",
+            "test-index",
+            "-i",
+            "/path/to/docs",
+            "--bm25-k1",
+            "1.5",
+            "--bm25-b",
+            "0.8",
+        ]);
+        match cli.command {
+            Commands::Build {
+                bm25_k1, bm25_b, no_hybrid, ..
+            } => {
+                assert!(!no_hybrid, "Hybrid search should be enabled by default");
+                assert_eq!(bm25_k1, 1.5, "BM25 k1 parameter should be 1.5");
+                assert_eq!(bm25_b, 0.8, "BM25 b parameter should be 0.8");
+            }
+            _ => panic!("Expected Build command"),
+        }
+    }
+
+    #[test]
+    fn test_build_default_bm25_parameters() {
+        // Test default BM25 parameters
+        let cli = Cli::parse_from(["vyakti", "build", "test-index", "-i", "/path/to/docs"]);
+        match cli.command {
+            Commands::Build {
+                bm25_k1, bm25_b, ..
+            } => {
+                assert_eq!(bm25_k1, 1.2, "Default BM25 k1 parameter should be 1.2");
+                assert_eq!(bm25_b, 0.75, "Default BM25 b parameter should be 0.75");
+            }
+            _ => panic!("Expected Build command"),
+        }
+    }
+
+    #[test]
+    fn test_search_default_fusion_strategy() {
+        // Test default fusion strategy is RRF
+        let cli = Cli::parse_from(["vyakti", "search", "test-index", "query"]);
+        match cli.command {
+            Commands::Search { fusion, .. } => {
+                assert_eq!(fusion, "rrf", "Default fusion strategy should be 'rrf'");
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_custom_fusion_strategy() {
+        // Test custom fusion strategies
+        let test_cases = vec![
+            ("weighted", Some(0.7)),
+            ("cascade", Some(10.0)),
+            ("vector-only", None),
+            ("keyword-only", None),
+        ];
+
+        for (strategy, param) in test_cases {
+            let mut args = vec!["vyakti", "search", "test-index", "query", "--fusion", strategy];
+            let param_str;
+            if let Some(p) = param {
+                param_str = p.to_string();
+                args.push("--fusion-param");
+                args.push(&param_str);
+            }
+
+            let cli = Cli::parse_from(args);
+            match cli.command {
+                Commands::Search {
+                    fusion,
+                    fusion_param,
+                    ..
+                } => {
+                    assert_eq!(fusion, strategy, "Fusion strategy should be '{}'", strategy);
+                    assert_eq!(
+                        fusion_param, param,
+                        "Fusion param should be {:?} for strategy '{}'",
+                        param, strategy
+                    );
+                }
+                _ => panic!("Expected Search command"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_search_with_highlight_flag() {
+        // Test --highlight flag
+        let cli = Cli::parse_from(["vyakti", "search", "test-index", "query", "--highlight"]);
+        match cli.command {
+            Commands::Search { highlight, .. } => {
+                assert!(highlight, "Highlight should be enabled with --highlight flag");
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_without_highlight_flag() {
+        // Test default (no --highlight)
+        let cli = Cli::parse_from(["vyakti", "search", "test-index", "query"]);
+        match cli.command {
+            Commands::Search { highlight, .. } => {
+                assert!(!highlight, "Highlight should be disabled by default");
+            }
+            _ => panic!("Expected Search command"),
+        }
     }
 }

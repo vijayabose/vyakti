@@ -10,15 +10,18 @@ repository.workspace = true
 [dependencies]
 vyakti-common = { path = "../vyakti-common" }
 vyakti-storage = { path = "../vyakti-storage" }
+vyakti-embedding = { path = "../vyakti-embedding" }
 
 tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 rand.workspace = true
 rayon.workspace = true
 parking_lot.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

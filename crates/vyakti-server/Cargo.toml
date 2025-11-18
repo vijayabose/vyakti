@@ -7,13 +7,20 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "vyakti-server"
+path = "src/main.rs"
+
 [dependencies]
 vyakti-common = { path = "../vyakti-common" }
 vyakti-core = { path = "../vyakti-core" }
 vyakti-proto = { path = "../vyakti-proto" }
+vyakti-backend-hnsw = { path = "../vyakti-backend-hnsw" }
+vyakti-embedding = { path = "../vyakti-embedding" }
 
 tokio.workspace = true
 anyhow.workspace = true
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -34,3 +41,6 @@ prometheus.workspace = true
 config.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
+vyakti-backend-hnsw = { path = "../vyakti-backend-hnsw" }
+vyakti-embedding = { path = "../vyakti-embedding" }
