@@ -1,0 +1,21 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12.0", "numpy", "cmake>=3.30"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "leann-backend-diskann"
+version = "0.3.5"
+dependencies = ["leann-core==0.3.5", "numpy", "protobuf>=3.19.0"]
+
+[tool.scikit-build]
+# Key: simplified CMake path
+cmake.source-dir = "third_party/DiskANN"
+# Key: Python package in root directory, paths match exactly
+wheel.packages = ["leann_backend_diskann"]
+# Use default redirect mode
+editable.mode = "redirect"
+cmake.build-type = "Release"
+build.verbose = true
+build.tool-args = ["-j8"]
+# Let CMake find packages via Homebrew prefix
+cmake.define = {CMAKE_PREFIX_PATH = {env = "CMAKE_PREFIX_PATH"}, OpenMP_ROOT = {env = "OpenMP_ROOT"}}
