@@ -12,7 +12,8 @@ name = "vyakti"
 path = "src/main.rs"
 
 [features]
-default = ["all-formats", "ast-extended"]
+default = ["all-formats", "ast-extended", "llama-cpp"]
+llama-cpp = ["vyakti-embedding/llama-cpp"]
 ast = ["vyakti-chunking/ast"]
 ast-extended = ["vyakti-chunking/ast-extended"]
 text-formats = ["vyakti-chunking/text-formats"]
