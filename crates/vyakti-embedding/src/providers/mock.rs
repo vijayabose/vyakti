@@ -1,4 +1,4 @@
-//! Embedding providers.
+//! Mock embedding provider for testing
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

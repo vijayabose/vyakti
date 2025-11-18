@@ -98,11 +98,12 @@ vyakti/
 │   │
 │   ├── vyakti-embedding/       # Embedding computation
 │   │   ├── src/
-│   │   │   ├── models/
-│   │   │   │   ├── sentence_transformers.rs
-│   │   │   │   ├── openai.rs
-│   │   │   │   ├── ollama.rs
-│   │   │   │   └── onnx.rs
+│   │   │   ├── providers/
+│   │   │   │   ├── llama_cpp.rs   # Default: llama.cpp with auto-download
+│   │   │   │   ├── onnx.rs        # ONNX Runtime (optional)
+│   │   │   │   ├── openai.rs      # Future: OpenAI API
+│   │   │   │   └── mock.rs        # Testing mock provider
+│   │   │   ├── download.rs        # Model download from HuggingFace
 │   │   │   ├── server.rs      # Embedding server
 │   │   │   ├── batching.rs    # Batch processing
 │   │   │   └── cache.rs       # Embedding cache
@@ -369,26 +370,76 @@ impl IndexBuilder {
 **Key Components**:
 
 ```rust
-// models/sentence_transformers.rs
-pub struct SentenceTransformersModel {
-    model: ort::Session,     // ONNX Runtime
+// providers/llama_cpp.rs - Default provider with auto-download
+pub struct LlamaCppConfig {
+    pub model_path: PathBuf,
+    pub n_gpu_layers: u32,    // GPU layers to offload
+    pub n_ctx: u32,           // Context size
+    pub n_threads: u32,       // CPU threads
+    pub dimension: usize,     // Embedding dimension
+    pub normalize: bool,      // Normalize embeddings
+}
+
+pub struct LlamaCppProvider {
+    model: Arc<LlamaModel>,
+    context: Arc<Mutex<LlamaContext>>,
+    config: LlamaCppConfig,
+}
+
+impl EmbeddingProvider for LlamaCppProvider {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut embeddings = Vec::with_capacity(texts.len());
+
+        for text in texts {
+            let embedding = tokio::task::spawn_blocking({
+                let provider = self.clone();
+                let text = text.clone();
+                move || provider.compute_single_embedding(&text)
+            })
+            .await??;
+
+            embeddings.push(embedding);
+        }
+
+        Ok(embeddings)
+    }
+
+    fn dimension(&self) -> usize {
+        self.config.dimension
+    }
+}
+
+// download.rs - Automatic model download from HuggingFace
+pub async fn ensure_model(model_path: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = model_path {
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Check for default model
+    let default_path = get_model_path("mxbai-embed-large-v1.q4_k_m.gguf")?;
+    if default_path.exists() {
+        return Ok(default_path);
+    }
+
+    // Download from HuggingFace Hub
+    download_default_model().await
+}
+
+// providers/onnx.rs - ONNX Runtime provider (optional)
+pub struct OnnxProvider {
+    model: ort::Session,
     tokenizer: Tokenizer,
     dimension: usize,
 }
 
-impl EmbeddingProvider for SentenceTransformersModel {
+impl EmbeddingProvider for OnnxProvider {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let batches = self.batch_texts(texts, 32);
-        let mut embeddings = Vec::new();
-
-        for batch in batches {
-            let tokens = self.tokenizer.encode_batch(batch)?;
-            let inputs = self.prepare_inputs(tokens)?;
-            let outputs = self.model.run(inputs)?;
-            embeddings.extend(self.extract_embeddings(outputs)?);
-        }
-
-        Ok(embeddings)
+        let tokens = self.tokenizer.encode_batch(texts)?;
+        let inputs = self.prepare_inputs(tokens)?;
+        let outputs = self.model.run(inputs)?;
+        self.extract_embeddings(outputs)
     }
 
     fn dimension(&self) -> usize {
