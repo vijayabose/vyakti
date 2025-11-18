@@ -176,9 +176,10 @@ Register backends in `registry.py` (`BACKEND_REGISTRY` dict).
 - `mlx` - Apple Silicon optimized (ARM64 macOS only)
 
 **Rust (Vyakti) Providers:**
-- `llama-cpp` - Local models via llama.cpp (default, auto-downloads mxbai-embed-large)
-- `onnx` - ONNX Runtime for local models
-- Future: OpenAI API, custom providers
+- `llama-cpp` - Local models via llama.cpp (default, auto-downloads mxbai-embed-large-v1)
+- `ollama` - Local models via Ollama server
+- `openai` - OpenAI API for cloud-based embeddings
+- `onnx` - ONNX Runtime for local models (future)
 
 ### Graph-Based Recomputation
 

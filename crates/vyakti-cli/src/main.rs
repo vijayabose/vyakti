@@ -12,10 +12,13 @@ use walkdir::WalkDir;
 
 use vyakti_backend_hnsw::HnswBackend;
 use vyakti_chunking::{ChunkConfig, CodeLanguage, TextChunker};
-use vyakti_common::{Backend, BackendConfig};
+use vyakti_common::{Backend, BackendConfig, EmbeddingProvider};
 use vyakti_core::{FusionStrategy, HybridSearcher, VyaktiBuilder, VyaktiSearcher};
-use vyakti_embedding::{OllamaConfig, OllamaProvider};
+use vyakti_embedding::{OllamaConfig, OllamaProvider, OpenAIConfig, OpenAIProvider};
 use vyakti_keyword::KeywordConfig;
+
+#[cfg(feature = "llama-cpp")]
+use vyakti_embedding::{ensure_model, LlamaCppConfig, LlamaCppProvider};
 
 #[cfg(feature = "ast")]
 use vyakti_chunking::AstChunker;
@@ -72,6 +75,10 @@ enum Commands {
         #[arg(long)]
         no_chunking: bool,
 
+        /// Embedding provider to use: ollama, llama-cpp, openai (default: ollama)
+        #[arg(long, default_value = "ollama")]
+        provider: String,
+
         /// Embedding model to use (default: mxbai-embed-large)
         #[arg(long, default_value = "mxbai-embed-large")]
         embedding_model: String,
@@ -79,6 +86,18 @@ enum Commands {
         /// Embedding dimension (default: 1024 for mxbai-embed-large)
         #[arg(long, default_value = "1024")]
         embedding_dimension: usize,
+
+        /// GPU layers to offload (llama-cpp only, default: 0 = CPU only)
+        #[arg(long, default_value = "0")]
+        gpu_layers: u32,
+
+        /// Model threads for inference (llama-cpp only, default: auto-detect)
+        #[arg(long)]
+        model_threads: Option<u32>,
+
+        /// OpenAI API key (openai provider only, or set OPENAI_API_KEY env var)
+        #[arg(long, env = "OPENAI_API_KEY")]
+        openai_api_key: Option<String>,
 
         /// Enable compact mode (LEANN): prune 95% of embeddings for massive storage savings
         #[arg(long)]
@@ -244,8 +263,12 @@ async fn build_index(
     chunk_overlap: usize,
     enable_code_chunking: bool,
     no_chunking: bool,
+    provider: String,
     embedding_model: String,
     embedding_dimension: usize,
+    gpu_layers: u32,
+    model_threads: Option<u32>,
+    openai_api_key: Option<String>,
     compact: bool,
     no_hybrid: bool,
     bm25_k1: f32,
@@ -360,23 +383,69 @@ async fn build_index(
 
     // Create backend and embedding provider
     let backend = Box::new(HnswBackend::with_config(config.clone()));
-    let ollama_config = OllamaConfig {
-        base_url: "http://localhost:11434".to_string(),
-        model: embedding_model.clone(),
-        timeout_secs: 30,
-    };
 
     if verbose {
-        println!("  {} Initializing Ollama embedding provider...", "→".cyan());
+        println!("  {} Initializing {} embedding provider...", "→".cyan(), provider);
         println!("  {} Using model: {}", "→".cyan(), embedding_model);
         println!("  {} Embedding dimension: {}", "→".cyan(), embedding_dimension);
     }
 
-    let embedding_provider = Arc::new(
-        OllamaProvider::new(ollama_config, embedding_dimension)
-            .await
-            .context("Failed to initialize Ollama embedding provider")?,
-    );
+    let embedding_provider: Arc<dyn EmbeddingProvider> = match provider.to_lowercase().as_str() {
+        "ollama" => {
+            let ollama_config = OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                model: embedding_model.clone(),
+                timeout_secs: 30,
+            };
+            Arc::new(
+                OllamaProvider::new(ollama_config, embedding_dimension)
+                    .await
+                    .context("Failed to initialize Ollama embedding provider")?,
+            )
+        }
+        #[cfg(feature = "llama-cpp")]
+        "llama-cpp" | "llamacpp" => {
+            // Ensure model is downloaded
+            let model_path = ensure_model(None)
+                .await
+                .context("Failed to ensure llama.cpp model is available")?;
+
+            if verbose {
+                println!("  {} Using model: {}", "→".cyan(), model_path.display());
+                println!("  {} GPU layers: {}", "→".cyan(), gpu_layers);
+                println!("  {} Threads: {}", "→".cyan(), model_threads.unwrap_or_else(|| num_cpus::get() as u32));
+            }
+
+            let llama_config = LlamaCppConfig {
+                model_path,
+                n_gpu_layers: gpu_layers,
+                n_ctx: 512,
+                n_threads: model_threads.unwrap_or_else(|| num_cpus::get() as u32),
+                dimension: embedding_dimension,
+                normalize: true,
+            };
+            Arc::new(
+                LlamaCppProvider::new(llama_config)
+                    .context("Failed to initialize llama.cpp embedding provider")?,
+            )
+        }
+        "openai" => {
+            let api_key = openai_api_key
+                .context("OpenAI API key required. Set OPENAI_API_KEY env var or use --openai-api-key")?;
+
+            let openai_config = OpenAIConfig {
+                api_key,
+                model: embedding_model.clone(),
+                api_base: "https://api.openai.com/v1".to_string(),
+                timeout_secs: 30,
+            };
+            Arc::new(
+                OpenAIProvider::new(openai_config, embedding_dimension)
+                    .context("Failed to initialize OpenAI embedding provider")?,
+            )
+        }
+        _ => anyhow::bail!("Unknown provider '{}'. Supported providers: ollama, llama-cpp, openai", provider),
+    };
 
     if verbose {
         println!("  {} Embedding provider initialized", "✓".green());
@@ -1109,8 +1178,12 @@ async fn main() -> Result<()> {
             chunk_overlap,
             enable_code_chunking,
             no_chunking,
+            provider,
             embedding_model,
             embedding_dimension,
+            gpu_layers,
+            model_threads,
+            openai_api_key,
             compact,
             no_hybrid,
             bm25_k1,
@@ -1130,8 +1203,12 @@ async fn main() -> Result<()> {
                 chunk_overlap,
                 enable_code_chunking,
                 no_chunking,
+                provider,
                 embedding_model,
                 embedding_dimension,
+                gpu_layers,
+                model_threads,
+                openai_api_key,
                 compact,
                 no_hybrid,
                 bm25_k1,

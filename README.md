@@ -695,7 +695,50 @@ vyakti build my-project --input ./project \
 
 ### Embedding Models
 
-Vyakti uses Ollama for embedding generation. Here are the recommended models:
+Vyakti supports multiple embedding providers:
+
+- **llama.cpp** (default) - Local models with auto-download, CPU and GPU support
+- **Ollama** - Local models via Ollama server
+- **OpenAI** - Cloud-based via OpenAI API
+
+#### Embedding Provider Selection
+
+```bash
+# Use llama.cpp (default) - auto-downloads mxbai-embed-large model
+vyakti build docs --input ./files
+
+# Use Ollama
+vyakti build docs --input ./files --provider ollama
+
+# Use OpenAI
+vyakti build docs --input ./files --provider openai --openai-api-key sk-...
+```
+
+#### llama.cpp Provider (Default)
+
+The llama.cpp provider automatically downloads and uses the **mxbai-embed-large** model (1024 dimensions) on first use:
+
+```bash
+# Default: uses llama.cpp with auto-download
+vyakti build docs --input ./files
+
+# With GPU acceleration (requires CUDA)
+vyakti build docs --input ./files --gpu-layers 32
+
+# With custom thread count
+vyakti build docs --input ./files --model-threads 8
+```
+
+**Features:**
+- ✅ Automatic model download from HuggingFace
+- ✅ Works offline after first download
+- ✅ CPU and GPU support
+- ✅ No external server required
+- ✅ Model stored at `~/.vyakti/models/`
+
+#### Ollama Provider
+
+Vyakti can use Ollama for embedding generation. Here are the recommended models:
 
 #### Recommended Models
 
@@ -770,6 +813,30 @@ vyakti build docs --input ./files \
 ```
 
 **Important:** You must specify the correct dimension for your model. Check the model documentation on [ollama.com/library](https://ollama.com/library) for dimension information.
+
+#### OpenAI Provider
+
+Use OpenAI's embedding API for cloud-based embeddings:
+
+```bash
+# Set API key via environment variable
+export OPENAI_API_KEY=sk-...
+vyakti build docs --input ./files --provider openai
+
+# Or pass API key as argument
+vyakti build docs --input ./files --provider openai --openai-api-key sk-...
+
+# Use different OpenAI model
+vyakti build docs --input ./files \
+  --provider openai \
+  --embedding-model text-embedding-3-large \
+  --embedding-dimension 3072
+```
+
+**Common OpenAI Embedding Models:**
+- `text-embedding-3-small` (1536 dimensions) - Cost-effective, good quality
+- `text-embedding-3-large` (3072 dimensions) - Best quality, higher cost
+- `text-embedding-ada-002` (1536 dimensions) - Legacy model
 
 ### As a Server
 

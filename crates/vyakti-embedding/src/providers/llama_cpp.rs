@@ -13,8 +13,6 @@ use llama_cpp_2::model::params::LlamaModelParams;
 #[cfg(feature = "llama-cpp")]
 use llama_cpp_2::model::LlamaModel;
 #[cfg(feature = "llama-cpp")]
-use llama_cpp_2::context::LlamaContext;
-#[cfg(feature = "llama-cpp")]
 use llama_cpp_2::model::AddBos;
 #[cfg(feature = "llama-cpp")]
 use parking_lot::Mutex;
@@ -60,10 +58,16 @@ impl Default for LlamaCppConfig {
 }
 
 #[cfg(feature = "llama-cpp")]
+/// Inner state that holds backend and model together
+struct LlamaCppState {
+    backend: LlamaBackend,
+    model: LlamaModel,
+}
+
+#[cfg(feature = "llama-cpp")]
 /// llama.cpp-based embedding provider
 pub struct LlamaCppProvider {
-    model: Arc<LlamaModel>,
-    context: Arc<Mutex<LlamaContext<'static>>>,
+    state: Arc<Mutex<LlamaCppState>>,
     config: LlamaCppConfig,
 }
 
@@ -88,35 +92,33 @@ impl LlamaCppProvider {
         let model = LlamaModel::load_from_file(&backend, &config.model_path, &model_params)
             .map_err(|e| VyaktiError::Embedding(format!("Failed to load model: {}", e)))?;
 
-        // Wrap model in Arc first so context can borrow from it
-        let model = Arc::new(model);
-
-        // Create context - it borrows from the Arc'ed model
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(config.n_ctx))
-            .with_n_threads(config.n_threads)
-            .with_embeddings(true);
-
-        let context = model.new_context(&backend, ctx_params)
-            .map_err(|e| VyaktiError::Embedding(format!("Failed to create context: {}", e)))?;
-
         info!("llama.cpp provider initialized successfully");
 
+        let state = LlamaCppState { backend, model };
+
         Ok(Self {
-            model,
-            context: Arc::new(Mutex::new(context)),
+            state: Arc::new(Mutex::new(state)),
             config,
         })
     }
 
     /// Compute embedding for a single text
     fn compute_single_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        let mut context = self.context.lock();
+        let state = self.state.lock();
 
         // Tokenize text - add BOS (beginning of sentence) token
-        let tokens = self.model
+        let tokens = state.model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| VyaktiError::Embedding(format!("Tokenization failed: {}", e)))?;
+
+        // Create context for this embedding computation
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(std::num::NonZeroU32::new(self.config.n_ctx))
+            .with_n_threads(self.config.n_threads)
+            .with_embeddings(true);
+
+        let mut context = state.model.new_context(&state.backend, ctx_params)
+            .map_err(|e| VyaktiError::Embedding(format!("Failed to create context: {}", e)))?;
 
         // Create batch
         let mut batch = LlamaBatch::new(self.config.n_ctx as usize, 1);
@@ -132,7 +134,7 @@ impl LlamaCppProvider {
 
         // Get embeddings
         let embeddings = context.embeddings_seq_ith(0)
-            .ok_or_else(|| VyaktiError::Embedding("Failed to get embeddings".to_string()))?;
+            .map_err(|e| VyaktiError::Embedding(format!("Failed to get embeddings: {}", e)))?;
 
         let mut embedding = embeddings.to_vec();
 
@@ -187,8 +189,7 @@ impl EmbeddingProvider for LlamaCppProvider {
 impl Clone for LlamaCppProvider {
     fn clone(&self) -> Self {
         Self {
-            model: Arc::clone(&self.model),
-            context: Arc::clone(&self.context),
+            state: Arc::clone(&self.state),
             config: self.config.clone(),
         }
     }

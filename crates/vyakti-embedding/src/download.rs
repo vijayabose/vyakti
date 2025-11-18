@@ -1,10 +1,8 @@
 //! Model download utilities for HuggingFace Hub
 
 use anyhow::{Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tracing::{info, debug};
 
 /// Default model configuration
