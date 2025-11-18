@@ -9,4 +9,4 @@ pub mod mock;
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp::{LlamaCppConfig, LlamaCppProvider};
 
-pub use mock::MockEmbeddingProvider;
+pub use mock::{OpenAIConfig, OpenAIProvider, OllamaConfig, OllamaProvider};
